@@ -538,6 +538,7 @@ def main():
     #
     # Order: PPG → MIPROv2 (compile+eval) → GEPA (compile+eval)
     #        → flat_all → static_best → random_gating → highest_utility
+    #        → MIPROv2 (compile+eval) → GEPA (compile+eval)
     # ------------------------------------------------------------------
     from ppg.eval.harness import EvalConfig, EvalHarness, EvalReport
 
@@ -572,6 +573,13 @@ def main():
         "ppg", _splits, lm_counter=lm, opt_calls=train_api_calls
     )["test"]
     optimized_prompts["ppg"] = build_best_path_prompt(graph)
+
+    # -- Internal baselines: one at a time (no optimization phase) --
+    for name in internal_baselines:
+        _eval_step(f"Evaluating {name}...")
+        all_metrics[name] = harness.evaluate_splits(
+            name, _splits, lm_counter=lm, opt_calls=0
+        )["test"]
 
     # -- MIPROv2: compile then eval --
     if args.run_mipro:
@@ -636,13 +644,6 @@ def main():
             optimized_prompts["gepa"] = gepa._prompt_prefix or seed_prompt
         except ImportError as e:
             _info(f"SKIP — {e}")
-
-    # -- Internal baselines: one at a time (no optimization phase) --
-    for name in internal_baselines:
-        _eval_step(f"Evaluating {name}...")
-        all_metrics[name] = harness.evaluate_splits(
-            name, _splits, lm_counter=lm, opt_calls=0
-        )["test"]
 
     # Collect static-path prompts for internal baselines.
     # flat_all / static_best have fixed templates; routing methods vary per input.
