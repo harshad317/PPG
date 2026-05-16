@@ -287,6 +287,25 @@ def build_seed_prompt(graph) -> str:
     return asm.assemble(order, {"input": "<INPUT>"})
 
 
+def build_best_path_prompt(graph) -> str:
+    """Greedy highest-utility path assembled as a flat prompt template."""
+    from ppg.core.executor import PromptAssembler
+    sources  = list(graph.source_ids)
+    current  = min(sources)
+    path     = [current]
+    visited  = {current}
+    while current not in graph.terminal_ids:
+        successors = [dst for (src, dst) in graph.edges
+                      if src == current and dst not in visited]
+        if not successors:
+            break
+        current = max(successors, key=lambda nid: graph.nodes[nid].utility)
+        path.append(current)
+        visited.add(current)
+    asm = PromptAssembler(graph)
+    return asm.assemble(path, {"input": "<INPUT>"})
+
+
 # ---------------------------------------------------------------------------
 # LM client factory
 # ---------------------------------------------------------------------------
@@ -517,7 +536,8 @@ def main():
         constraint_checker=constraint_checker,
     )
 
-    all_metrics: dict[str, "BaselineMetrics"] = {}
+    all_metrics:       dict[str, "BaselineMetrics"] = {}
+    optimized_prompts: dict[str, str]               = {}
     _splits = {"train": train_ex, "val": val_ex, "test": test_ex}
 
     # -- PPG --
@@ -525,6 +545,7 @@ def main():
     all_metrics["ppg"] = harness.evaluate_splits(
         "ppg", _splits, lm_counter=lm, opt_calls=train_api_calls
     )["test"]
+    optimized_prompts["ppg"] = build_best_path_prompt(graph)
 
     # -- MIPROv2: compile then eval --
     if args.run_mipro:
@@ -544,6 +565,7 @@ def main():
             all_metrics["miprov2"] = harness.evaluate_splits(
                 "miprov2", _splits, lm_counter=lm, opt_calls=mipro_opt_calls
             )["test"]
+            optimized_prompts["miprov2"] = mipro._prompt_prefix or seed_prompt
         except ImportError as e:
             _info(f"SKIP — {e}")
 
@@ -575,6 +597,7 @@ def main():
             all_metrics["gepa"] = harness.evaluate_splits(
                 "gepa", _splits, lm_counter=lm, opt_calls=gepa_opt_calls
             )["test"]
+            optimized_prompts["gepa"] = gepa._prompt_prefix or seed_prompt
         except ImportError as e:
             _info(f"SKIP — {e}")
 
@@ -584,6 +607,13 @@ def main():
         all_metrics[name] = harness.evaluate_splits(
             name, _splits, lm_counter=lm, opt_calls=0
         )["test"]
+
+    # Collect static-path prompts for internal baselines.
+    # flat_all / static_best have fixed templates; routing methods vary per input.
+    optimized_prompts["flat_all"]        = build_seed_prompt(graph)
+    optimized_prompts["static_best"]     = build_best_path_prompt(graph)
+    optimized_prompts["random_gating"]   = "[dynamic — random node selection per input]"
+    optimized_prompts["highest_utility"] = "[dynamic — greedy utility routing per input]"
 
     # Assemble final report from accumulated per-method results
     ppg_m = all_metrics.pop("ppg")
@@ -651,6 +681,28 @@ def main():
         print(f"Training time: {train_time:.0f}s")
 
     # ------------------------------------------------------------------
+    # Print optimized prompts
+    # ------------------------------------------------------------------
+    try:
+        from rich.console import Console as _RC
+        from rich.panel import Panel as _RP
+        from rich.rule import Rule as _RR
+        _pc = _RC()
+        _pc.print()
+        _pc.print(_RR("[bold]Optimized Prompts[/bold]"))
+        for _mname, _prompt in optimized_prompts.items():
+            _pc.print(_RP(
+                _prompt,
+                title=f"[bold cyan]{_mname}[/bold cyan]",
+                expand=False,
+            ))
+    except ImportError:
+        print("\n=== Optimized Prompts ===")
+        for _mname, _prompt in optimized_prompts.items():
+            print(f"\n--- {_mname} ---")
+            print(_prompt)
+
+    # ------------------------------------------------------------------
     # Save results
     # ------------------------------------------------------------------
     out_dir = Path(args.output_dir)
@@ -678,7 +730,8 @@ def main():
         "training_stats": stats.summary(),
         "results":        table,
         "winner":         winner,
-        "ppg_vs_flat_all": round(ppg_vs_flat, 4),
+        "ppg_vs_flat_all":   round(ppg_vs_flat, 4),
+        "optimized_prompts": optimized_prompts,
     }
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
