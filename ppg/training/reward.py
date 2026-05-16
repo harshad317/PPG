@@ -268,12 +268,18 @@ class IFBenchConstraintChecker:
         import re as _re
         words = len(response.split())
         # parse "fewer than N words", "at least N words", "exactly N words", etc.
-        m = _re.search(r"(fewer than|less than|under|at most)\s+(\d+)\s+word", ctext)
+        m = _re.search(r"(fewer than|less than|under)\s+(\d+)\s+word", ctext)
         if m:
             return words < int(m.group(2))
-        m = _re.search(r"(more than|at least|over)\s+(\d+)\s+word", ctext)
+        m = _re.search(r"(at most|no more than|maximum of)\s+(\d+)\s+word", ctext)
+        if m:
+            return words <= int(m.group(2))
+        m = _re.search(r"(more than|over)\s+(\d+)\s+word", ctext)
         if m:
             return words > int(m.group(2))
+        m = _re.search(r"(at least|no fewer than|minimum of)\s+(\d+)\s+word", ctext)
+        if m:
+            return words >= int(m.group(2))
         m = _re.search(r"(exactly|around|about)\s+(\d+)\s+word", ctext)
         if m:
             n = int(m.group(2))
@@ -282,36 +288,51 @@ class IFBenchConstraintChecker:
         if m:
             return int(m.group(1)) <= words <= int(m.group(3))
         # Sentence count fallback
-        sentences = len(_re.split(r"[.!?]+", response.strip()))
+        sentences = len([s for s in _re.split(r"[.!?]+", response.strip()) if s.strip()])
         m = _re.search(r"(\d+)\s+sentence", ctext)
         if m:
             return abs(sentences - int(m.group(1))) <= 1
         return ctext in response.lower()
 
     def _check_format(self, response: str, ctext: str) -> bool:
+        negated = bool(re.search(r"\b(do not|avoid|without|no)\b", ctext))
         if "bullet" in ctext or "bulleted" in ctext:
-            return bool(self._BULLET_RE.search(response))
+            has_format = bool(self._BULLET_RE.search(response))
+            return not has_format if negated else has_format
         if "numbered list" in ctext or "ordered list" in ctext:
-            return bool(self._NUMBERED_RE.search(response))
+            has_format = bool(self._NUMBERED_RE.search(response))
+            return not has_format if negated else has_format
         if "header" in ctext or "heading" in ctext:
-            return bool(self._HEADER_RE.search(response))
+            has_format = bool(self._HEADER_RE.search(response))
+            return not has_format if negated else has_format
         if "json" in ctext:
-            return bool(self._JSON_RE.match(response.strip()))
+            has_format = bool(self._JSON_RE.match(response.strip()))
+            return not has_format if negated else has_format
         if "paragraph" in ctext:
-            return len([p for p in response.split("\n\n") if p.strip()]) >= 2
+            has_format = len([p for p in response.split("\n\n") if p.strip()]) >= 2
+            return not has_format if negated else has_format
         return ctext in response.lower()
 
     def _check_keywords(self, response: str, ctext: str) -> bool:
         resp_lower = response.lower()
-        # "include the word X" / "must contain X"
         import re as _re
-        m = _re.search(r'(?:include|contain|use|mention)\s+(?:the\s+)?(?:word\s+)?["\']?(\w+)["\']?', ctext)
-        if m:
-            return m.group(1).lower() in resp_lower
         # "do not use X" / "avoid X"
-        m = _re.search(r'(?:do not|avoid|without|no)\s+(?:use\s+)?(?:the\s+)?(?:word\s+)?["\']?(\w+)["\']?', ctext)
+        m = _re.search(
+            r'(?:do not|avoid|without|no)\s+'
+            r'(?:(?:include|contain|use|mention)\s+)?'
+            r'(?:any\s+)?(?:the\s+)?(?:word\s+)?["\']?([\w-]+)["\']?',
+            ctext,
+        )
         if m:
             return m.group(1).lower() not in resp_lower
+        # "include the word X" / "must contain X"
+        m = _re.search(
+            r'(?:include|contain|use|mention)\s+'
+            r'(?:any\s+)?(?:the\s+)?(?:word\s+)?["\']?([\w-]+)["\']?',
+            ctext,
+        )
+        if m:
+            return m.group(1).lower() in resp_lower
         return ctext in resp_lower
 
     def _check_content_words(self, response: str, ctext: str) -> bool:

@@ -181,6 +181,10 @@ class EvalConfig:
     # Fixed path for static_best (topological order of node IDs).
     # If None, static_best uses topological sort of the graph.
     static_best_path: Optional[list[str]] = None
+
+    # Optional calibrated deployment path for PPG itself.  When set, PPG is
+    # evaluated as the selected fixed route rather than the raw LinUCB router.
+    ppg_path: Optional[list[str]] = None
     seed: int = 0
 
     # Progress display
@@ -540,6 +544,19 @@ class EvalHarness:
     # ------------------------------------------------------------------
 
     def _run_ppg(self, examples: list[EvalExample]) -> BaselineMetrics:
+        if self._cfg.ppg_path is not None:
+            runner = _StaticBestRunner(self._executor.graph, self._lm, self._cfg.ppg_path)
+            scores, tokens, cscores = self._run_examples(
+                examples, runner.run, desc="eval ppg      "
+            )
+            return BaselineMetrics(
+                name="ppg",
+                task_scores=scores,
+                token_counts=tokens,
+                constraint_scores=cscores,
+                lm_calls=len(examples),
+            )
+
         executor = self._executor
 
         def _call(ex: EvalExample) -> tuple[str, int]:

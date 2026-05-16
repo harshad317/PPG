@@ -43,6 +43,11 @@ class RoutingLM:
         return "42" if len(prompt) < 50 else "43"
 
 
+class PromptAwareLM:
+    def complete(self, prompt: str) -> str:
+        return "42" if "good route" in prompt else "wrong"
+
+
 def make_graph():
     b = PPGraphBuilder()
     b.add_fragment(FragmentType.TASK_FRAMING,    "Task: {input}")
@@ -67,6 +72,21 @@ def make_branching_graph():
     b.connect(tf, comp)
     b.connect(rs, oc)
     b.connect(comp, oc)
+    return b.build(), ids
+
+
+def make_calibration_graph():
+    b = PPGraphBuilder()
+    b.add_fragment(FragmentType.TASK_FRAMING, "Task: {input}")
+    b.add_fragment(FragmentType.REASONING_STYLE, "bad route")
+    b.add_fragment(FragmentType.REASONING_STYLE, "good route")
+    b.add_fragment(FragmentType.OUTPUT_CONTRACT, "Answer:")
+    ids = b.node_ids()
+    tf, bad, good, oc = ids
+    b.connect(tf, bad)
+    b.connect(tf, good)
+    b.connect(bad, oc)
+    b.connect(good, oc)
     return b.build(), ids
 
 
@@ -236,6 +256,21 @@ class TestEvalHarnessPPG:
         h = make_harness(baselines=[])
         report = h.evaluate(make_examples(3))
         assert all(t > 0 for t in report.ppg.token_counts)
+
+    def test_ppg_uses_calibrated_path_when_configured(self):
+        graph, ids = make_calibration_graph()
+        tf, _bad, good, oc = ids
+        lm = PromptAwareLM()
+        executor = make_executor(graph, lm)
+        cfg = EvalConfig(baselines=[], ppg_path=[tf, good, oc])
+        harness = EvalHarness(
+            executor=executor,
+            metric=ExactMatchMetric(),
+            lm=lm,
+            config=cfg,
+        )
+        report = harness.evaluate(make_examples(3, answer="42"))
+        assert report.ppg.task_accuracy == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------

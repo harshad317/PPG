@@ -14,6 +14,7 @@ from ppg.core import (
 from ppg.training import (
     ExactMatchMetric,
     F1Metric,
+    IFBenchConstraintChecker,
     KeywordConstraintChecker,
     MultipleChoiceMetric,
     NumericExactMatchMetric,
@@ -209,6 +210,40 @@ class TestKeywordConstraintChecker:
 
     def test_case_insensitive(self):
         assert self.c.check("Answer in JSON format", ["json"]) == 1.0
+
+
+class TestIFBenchConstraintChecker:
+    c = IFBenchConstraintChecker()
+
+    def test_negative_keyword_constraint_rewards_absence(self):
+        objs = [{"constraint_type": "Keywords",
+                 "constraint": "Do not include the word banana."}]
+        assert self.c.check("Apple and pear.", [], {"constraint_objects": objs}) == 1.0
+
+    def test_negative_keyword_constraint_penalizes_presence(self):
+        objs = [{"constraint_type": "Keywords",
+                 "constraint": "Do not include the word banana."}]
+        assert self.c.check("Apple and banana.", [], {"constraint_objects": objs}) == 0.0
+
+    def test_at_most_word_limit_is_inclusive(self):
+        objs = [{"constraint_type": "Length",
+                 "constraint": "Use at most 3 words."}]
+        assert self.c.check("one two three", [], {"constraint_objects": objs}) == 1.0
+
+    def test_at_least_word_limit_is_inclusive(self):
+        objs = [{"constraint_type": "Length",
+                 "constraint": "Use at least 3 words."}]
+        assert self.c.check("one two three", [], {"constraint_objects": objs}) == 1.0
+
+    def test_negative_bullet_format_rewards_plain_text(self):
+        objs = [{"constraint_type": "Format",
+                 "constraint": "Do not use bullet points."}]
+        assert self.c.check("Plain sentence.", [], {"constraint_objects": objs}) == 1.0
+
+    def test_negative_bullet_format_penalizes_bullets(self):
+        objs = [{"constraint_type": "Format",
+                 "constraint": "Do not use bullet points."}]
+        assert self.c.check("- item", [], {"constraint_objects": objs}) == 0.0
 
 
 # ---------------------------------------------------------------------------

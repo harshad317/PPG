@@ -8,7 +8,7 @@ against all baselines on the test split. MIPROv2 and GEPA are compiled in
 
 Baselines evaluated
 -------------------
-ppg            : trained PPG (LinUCB bandit + LOO credit + variance penalty)
+ppg            : trained PPG, optionally validation-calibrated to the best path
 flat_all       : all graph nodes concatenated, no routing
 static_best    : greedy highest-utility fixed path, no routing
 random_gating  : random node selection, no learning
@@ -301,7 +301,18 @@ def build_seed_prompt(graph) -> str:
 
 def build_best_path_prompt(graph) -> str:
     """Greedy highest-utility path assembled as a flat prompt template."""
+    return build_path_prompt(graph, best_utility_path(graph))
+
+
+def build_path_prompt(graph, path: list[str]) -> str:
+    """Assemble a fixed path as a flat prompt template."""
     from ppg.core.executor import PromptAssembler
+    asm = PromptAssembler(graph)
+    return asm.assemble(path, {"input": "<INPUT>"})
+
+
+def best_utility_path(graph) -> list[str]:
+    """Greedy highest-utility source-to-terminal path."""
     sources  = list(graph.source_ids)
     current  = min(sources)
     path     = [current]
@@ -314,8 +325,7 @@ def build_best_path_prompt(graph) -> str:
         current = max(successors, key=lambda nid: graph.nodes[nid].utility)
         path.append(current)
         visited.add(current)
-    asm = PromptAssembler(graph)
-    return asm.assemble(path, {"input": "<INPUT>"})
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +410,14 @@ def main():
                         help="PPG train episodes (default: 1000)")
     parser.add_argument("--finetune",type=int, default=200,
                         help="PPG finetune episodes (default: 200)")
+    parser.add_argument("--ppg-calibration", choices=["val_path", "none"],
+                        default="val_path", dest="ppg_calibration",
+                        help="Deployment calibration for PPG after training "
+                             "(default: val_path)")
+    parser.add_argument("--ppg-path-candidates", type=int, default=0,
+                        dest="ppg_path_candidates",
+                        help="Number of utility-ranked paths to validate for PPG; "
+                             "0 searches all complete paths (default: 0)")
     parser.add_argument("--run-mipro", action="store_true", dest="run_mipro",
                         help="Compile and run MIPROv2 baseline (requires dspy-ai)")
     parser.add_argument("--run-gepa",  action="store_true", dest="run_gepa",
@@ -506,7 +524,10 @@ def main():
         lm=lm,
         assembler=assembler,
         constraint_checker=constraint_checker,
-        config=RewardConfig(constraint_as_task=constraint_as_task),
+        config=RewardConfig(
+            constraint_as_task=constraint_as_task,
+            skip_variance=constraint_as_task,
+        ),
     )
     credit    = CreditAssigner(
         lm=lm,
@@ -546,6 +567,51 @@ def main():
           f"api_calls={train_api_calls}")
 
     # ------------------------------------------------------------------
+    # 4b. Calibrate the deployable PPG path on validation data only.
+    # ------------------------------------------------------------------
+    ppg_path = None
+    ppg_calibration_calls = 0
+    ppg_calibration_info = None
+    if args.ppg_calibration == "val_path" and val_ex:
+        _step_rule(5, 6, "Calibrating PPG deployment path on validation split...")
+        from ppg.eval.path_search import select_path_by_validation
+
+        max_candidates = (
+            None if args.ppg_path_candidates <= 0 else args.ppg_path_candidates
+        )
+        lm.reset()
+        t_cal = time.time()
+        selected = select_path_by_validation(
+            graph=graph,
+            examples=val_ex,
+            lm=lm,
+            metric=metric,
+            constraint_checker=constraint_checker,
+            max_candidates=max_candidates,
+            n_workers=args.workers,
+            show_progress=show_progress,
+        )
+        ppg_calibration_calls = lm.reset()
+        ppg_path = selected.path
+        ppg_calibration_info = {
+            "val_score":       round(selected.val_score, 4),
+            "mean_tokens":     round(selected.mean_tokens, 1),
+            "utility":         round(selected.utility, 4),
+            "n_paths_scored":  selected.n_paths_scored,
+            "total_paths":     selected.total_paths,
+            "api_calls":       ppg_calibration_calls,
+            "time_s":          round(time.time() - t_cal, 1),
+        }
+        _info(
+            f"selected path val={selected.val_score:.4f}  "
+            f"avg_tok={selected.mean_tokens:.1f}  "
+            f"paths={selected.n_paths_scored}/{selected.total_paths}  "
+            f"api_calls={ppg_calibration_calls}"
+        )
+    elif args.ppg_calibration == "val_path":
+        _info("skipping PPG path calibration because validation split is empty")
+
+    # ------------------------------------------------------------------
     # 5+. Evaluate one method at a time — each method fully done before next.
     #
     # Order: PPG → MIPROv2 (compile+eval) → GEPA (compile+eval)
@@ -569,6 +635,7 @@ def main():
         lm=lm,
         config=EvalConfig(
             baselines=internal_baselines,
+            ppg_path=ppg_path,
             show_progress=show_progress,
             n_workers=args.workers,
         ),
@@ -582,9 +649,16 @@ def main():
     # -- PPG --
     _eval_step("Evaluating PPG...")
     all_metrics["ppg"] = harness.evaluate_splits(
-        "ppg", _splits, lm_counter=lm, opt_calls=train_api_calls
+        "ppg",
+        _splits,
+        lm_counter=lm,
+        opt_calls=train_api_calls + ppg_calibration_calls,
     )["test"]
-    optimized_prompts["ppg"] = build_best_path_prompt(graph)
+    optimized_prompts["ppg"] = (
+        build_path_prompt(graph, ppg_path)
+        if ppg_path is not None
+        else "[dynamic: learned LinUCB routing per input]"
+    )
 
     # -- Internal baselines: one at a time (no optimization phase) --
     for name in internal_baselines:
@@ -661,8 +735,8 @@ def main():
     # flat_all / static_best have fixed templates; routing methods vary per input.
     optimized_prompts["flat_all"]        = build_seed_prompt(graph)
     optimized_prompts["static_best"]     = build_best_path_prompt(graph)
-    optimized_prompts["random_gating"]   = "[dynamic — random node selection per input]"
-    optimized_prompts["highest_utility"] = "[dynamic — greedy utility routing per input]"
+    optimized_prompts["random_gating"]   = "[dynamic: random node selection per input]"
+    optimized_prompts["highest_utility"] = build_best_path_prompt(graph)
 
     # Assemble final report from accumulated per-method results
     ppg_m = all_metrics.pop("ppg")
@@ -736,12 +810,13 @@ def main():
         from rich.console import Console as _RC
         from rich.panel import Panel as _RP
         from rich.rule import Rule as _RR
+        from rich.text import Text as _RT
         _pc = _RC()
         _pc.print()
         _pc.print(_RR("[bold]Optimized Prompts[/bold]"))
         for _mname, _prompt in optimized_prompts.items():
             _pc.print(_RP(
-                _prompt,
+                _RT(_prompt),
                 title=f"[bold cyan]{_mname}[/bold cyan]",
                 expand=False,
             ))
@@ -777,6 +852,7 @@ def main():
         "seed":           args.seed,
         "train_time_s":   round(train_time, 1),
         "training_stats": stats.summary(),
+        "ppg_calibration": ppg_calibration_info,
         "results":        rows,
         "winner":         winner,
         "ppg_vs_flat_all":   round(ppg_vs_flat, 4),

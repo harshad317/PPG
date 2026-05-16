@@ -115,8 +115,9 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
             # v2: explicit constraint decomposition before responding
             (
                 "You will respond to the prompt below. "
-                "First identify every explicit constraint (format, length, style, content). "
-                "Then write a response that satisfies ALL of them.\n\n"
+                "Silently identify every explicit constraint "
+                "(format, length, style, content). "
+                "Then write only the response that satisfies ALL of them.\n\n"
                 "{input}"
             ),
             # v3: strict compliance mode — treat each requirement as non-negotiable
@@ -145,9 +146,9 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
         "reasoning_style": [
             # v1: numbered checklist audit before writing
             (
-                "Before responding, list each constraint you identified, numbered:\n"
-                "1. [constraint]\n2. [constraint]\n...\n\n"
-                "Then write your response ensuring each constraint is satisfied."
+                "Before responding, silently check each constraint one by one. "
+                "Use that checklist only to guide the final answer; do not output "
+                "the checklist or any analysis."
             ),
             # v2: silent planning — no visible scratchpad, just produce the response
             (
