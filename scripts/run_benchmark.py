@@ -30,27 +30,24 @@ Usage
 -----
 # Quick smoke test (no external optimizers):
 python scripts/run_benchmark.py gsm8k \\
-    --model gpt-4o-mini --train-n 200 --test-n 100
+    --model gpt-4o-mini
 
-# Full run with all baselines:
+# Full run with all baselines (uses defaults: 100 train / 50 val / 500 test):
 python scripts/run_benchmark.py gsm8k \\
-    --model gpt-4o-mini --train-n 500 --test-n 200 \\
-    --run-mipro --run-gepa --reflection-model gpt-4o
+    --model gpt-4o-mini --run-mipro --run-gepa --reflection-model gpt-4o
 
 # IFBench (constraint following):
 python scripts/run_benchmark.py ifbench \\
-    --model gpt-4o-mini --train-n 300 --test-n 100 \\
-    --run-mipro --run-gepa
+    --model gpt-4o-mini --run-mipro --run-gepa
 
 # BigBenchHard (specific task):
 python scripts/run_benchmark.py bigbench_hard \\
     --model gpt-4o-mini --bbh-task causal_judgement \\
-    --train-n 100 --test-n 50 --run-mipro --run-gepa
+    --run-mipro --run-gepa
 
 # MMLU (specific subject):
 python scripts/run_benchmark.py mmlu \\
-    --model gpt-4o-mini --mmlu-subject abstract_algebra \\
-    --train-n 100 --test-n 50
+    --model gpt-4o-mini --mmlu-subject abstract_algebra
 
 Environment variables
 ---------------------
@@ -331,12 +328,12 @@ def main():
     parser.add_argument("--reflection-model", default="gpt-4o",
                         dest="reflection_model",
                         help="GEPA reflection LM — more capable model recommended (default: gpt-4o)")
-    parser.add_argument("--train-n",  type=int, default=500,  dest="train_n",
-                        help="Training examples (default: 500)")
-    parser.add_argument("--val-n",   type=int, default=100,   dest="val_n",
-                        help="Validation examples for GEPA evaluator (default: 100)")
-    parser.add_argument("--test-n",  type=int, default=200,   dest="test_n",
-                        help="Test examples (default: 200)")
+    parser.add_argument("--train-n",  type=int, default=100,  dest="train_n",
+                        help="Training examples (default: 100)")
+    parser.add_argument("--val-n",   type=int, default=50,   dest="val_n",
+                        help="Validation examples for MIPROv2/GEPA (default: 50)")
+    parser.add_argument("--test-n",  type=int, default=500,   dest="test_n",
+                        help="Test examples (default: 500)")
     parser.add_argument("--seed",    type=int, default=0,
                         help="Global random seed (default: 0)")
     parser.add_argument("--warmup",  type=int, default=200,
@@ -418,12 +415,15 @@ def main():
         config=ExecutorConfig(escalation_enabled=False),
     )
     assembler = PromptAssembler(graph)
+    # For constraint-only benchmarks (IFEval, IFBench), constraint satisfaction
+    # IS the task signal — ExactMatch against y_star would always be 0.
+    constraint_as_task = bench in ("ifeval", "ifbench")
     reward    = RewardComputer(
         task_metric=metric,
         lm=lm,
         assembler=assembler,
         constraint_checker=constraint_checker,
-        config=RewardConfig(),
+        config=RewardConfig(constraint_as_task=constraint_as_task),
     )
     credit    = CreditAssigner(
         lm=lm,
@@ -472,7 +472,7 @@ def main():
             from ppg.eval.external import MIPROv2Baseline
             seed_prompt = build_seed_prompt(graph)
             mipro = MIPROv2Baseline(metric=metric, auto="heavy")
-            mipro.compile(trainset=train_ex, seed_instructions=seed_prompt)
+            mipro.compile(trainset=train_ex, valset=val_ex, seed_instructions=seed_prompt)
             external_baselines["miprov2"] = mipro
             print("      MIPROv2 compiled successfully.")
         except ImportError as e:

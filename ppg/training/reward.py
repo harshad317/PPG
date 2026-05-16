@@ -300,12 +300,14 @@ class RewardComponents:
 
 @dataclass
 class RewardConfig:
-    lambda_cost:        float = 0.001   # token cost coefficient
-    lambda_variance:    float = 0.1     # perturbation variance coefficient
-    lambda_constraint:  float = 0.2     # constraint satisfaction coefficient
-    m_perturbation:     int   = 2       # perturbations per reward call
-    max_tokens_ref:     int   = 500     # token count upper bound for normalisation
-    skip_variance:      bool  = False   # set True for fast eval (no perturb calls)
+    lambda_cost:          float = 0.001   # token cost coefficient
+    lambda_variance:      float = 0.1     # perturbation variance coefficient
+    lambda_constraint:    float = 0.2     # constraint satisfaction coefficient
+    m_perturbation:       int   = 2       # perturbations per reward call
+    max_tokens_ref:       int   = 500     # token count upper bound for normalisation
+    skip_variance:        bool  = False   # set True for fast eval (no perturb calls)
+    constraint_as_task:   bool  = False   # use constraint score as r_task (IFEval/IFBench)
+                                          # when True: r_task = checker.check(); r_constraint=0
 
 
 # ---------------------------------------------------------------------------
@@ -357,12 +359,18 @@ class RewardComputer:
         y_star  : ground-truth reference answer
         constraints : list of constraint strings for r_constraint (IFBench)
         """
-        r_task = self.metric.score(trace.lm_response, y_star)
-
-        r_constraint = (
-            self.checker.check(trace.lm_response, constraints or [])
-            if self.checker is not None else 0.0
-        )
+        if self.cfg.constraint_as_task and self.checker is not None:
+            # Constraint-only benchmarks (IFEval, IFBench): constraint satisfaction
+            # IS the task signal. r_task = checker score; r_constraint suppressed
+            # to avoid double-counting in the total reward.
+            r_task       = self.checker.check(trace.lm_response, constraints or [])
+            r_constraint = 0.0
+        else:
+            r_task = self.metric.score(trace.lm_response, y_star)
+            r_constraint = (
+                self.checker.check(trace.lm_response, constraints or [])
+                if self.checker is not None else 0.0
+            )
 
         r_cost = self._cost(trace.token_count)
 

@@ -69,6 +69,7 @@ class MIPROv2Baseline:
     def compile(
         self,
         trainset:          list,
+        valset:            list = (),
         seed_instructions: str = "",
     ) -> None:
         """
@@ -79,6 +80,9 @@ class MIPROv2Baseline:
         Parameters
         ----------
         trainset          : list of TrainingExample or EvalExample
+        valset            : held-out validation examples for candidate selection;
+                            passed to MIPROv2.compile(valset=...) so DSPy does not
+                            have to split trainset internally
         seed_instructions : initial prompt text; MIPROv2 will mutate this
         """
         try:
@@ -94,6 +98,10 @@ class MIPROv2Baseline:
             dspy.Example(input=ex.x, y_star=ex.y_star).with_inputs("input")
             for ex in trainset
         ]
+        dspy_val = [
+            dspy.Example(input=ex.x, y_star=ex.y_star).with_inputs("input")
+            for ex in valset
+        ] if valset else None
 
         def dspy_metric(example, prediction, trace=None):
             try:
@@ -116,7 +124,10 @@ class MIPROv2Baseline:
                 return self.predict(input=input)
 
         optimizer = dspy.MIPROv2(metric=dspy_metric, auto=self._auto)
-        self._program = optimizer.compile(_PPGModule(), trainset=dspy_train)
+        compile_kwargs = {"trainset": dspy_train}
+        if dspy_val is not None:
+            compile_kwargs["valset"] = dspy_val
+        self._program = optimizer.compile(_PPGModule(), **compile_kwargs)
 
         # Extract optimized instructions for fair prompt-token accounting in run().
         # DSPy stores them on the compiled predict's signature; fall back to seed.
