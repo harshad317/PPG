@@ -5,9 +5,23 @@ One LinUCBArm per (src, dst) edge in the frozen graph. Arms are pre-created
 for all known edges at init time; unknown edges (e.g. escalation edges added
 at runtime) are created lazily.
 
-Regret bound (fixed graph, fixed edge set, linear reward assumption):
-  O(d * sqrt(T) * log T) per arm, where d = FEATURE_DIM, T = episodes.
-  Full proof: see paper Appendix A.
+Regret bound
+------------
+Per arm, under the following assumptions:
+  1. Fixed graph topology — no edges added or removed after __init__.
+  2. Linear reward model — E[r | phi] = theta* . phi for unknown theta*.
+  3. Rewards bounded in [0, 1] and conditionally independent across episodes.
+  4. Feature vectors phi are bounded: ||phi||_2 <= 1 (enforced by FeatureExtractor).
+
+Cumulative regret after T episodes:
+  R(T) = O(d * sqrt(T * log T))
+
+where d = FEATURE_DIM. This matches the standard LinUCB result of
+Chu et al. (2011, Theorem 3) with lambda_reg = 1.
+
+The bound applies per (src, dst) arm independently. When the policy selects
+among K edges at each node, the path-level regret accumulates across the
+K arm-selection steps that constitute one episode.
 
 Training mode  : UCB score = mean + alpha * uncertainty  (exploration)
 Eval mode      : UCB score = mean only                   (greedy)

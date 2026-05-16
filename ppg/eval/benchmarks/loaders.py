@@ -435,14 +435,26 @@ class MBPPPassAtOneMetric:
         ]
 
     def _run(self, code: str, tests: list[str]) -> float:
-        """Execute code + tests in isolated subprocess. Returns 1.0 or 0.0."""
+        """Execute code + tests in isolated subprocess with resource limits."""
         test_block = "\n".join(tests)
         script = f"{code}\n\n{test_block}\n"
+
+        def _set_limits() -> None:
+            try:
+                import resource
+                mem = 256 * 1024 * 1024  # 256 MB virtual memory
+                cpu = max(1, int(self.timeout))
+                resource.setrlimit(resource.RLIMIT_AS,  (mem, mem))
+                resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+            except Exception:
+                pass
+
         try:
             result = subprocess.run(
                 [sys.executable, "-c", script],
                 capture_output=True,
                 timeout=self.timeout,
+                preexec_fn=_set_limits if sys.platform != "win32" else None,
             )
             return 1.0 if result.returncode == 0 else 0.0
         except subprocess.TimeoutExpired:

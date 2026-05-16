@@ -465,7 +465,9 @@ metric = loader.recommended_metric()
 ```
 
 Security note for MBPP: `MBPPPassAtOneMetric` executes generated Python code in a
-subprocess. Use it only in a trusted or sandboxed environment.
+subprocess with a wall-clock timeout and (on Unix) 256 MB virtual-memory and CPU-time
+limits via `resource.setrlimit`. Use it only in a trusted or isolated environment;
+the resource limits reduce but do not eliminate execution risk.
 
 ## External Baselines
 
@@ -475,6 +477,8 @@ PPG includes wrappers for stronger external prompt optimizers:
 | --- | --- | --- | --- |
 | DSPy MIPROv2 | `MIPROv2Baseline` | `dspy-ai` | Bayesian instruction/few-shot prompt optimization |
 | GEPA | `GEPABaseline` | `gepa` | Evolutionary trace/reflection-based prompt adaptation |
+
+Call `MIPROv2Baseline.verify()` or `GEPABaseline.verify()` before `compile()` to confirm the optional package is importable and report its version.
 
 Example integration pattern:
 
@@ -591,11 +595,15 @@ The last verified local run before this README update was:
 
 ## Known Limitations
 
-- External MIPROv2 and GEPA integrations require optional packages and live verification
-  in the target environment.
-- The regret statement applies to the fixed-topology, edge-factored contextual bandit
-  setting under linear reward assumptions. It should be presented carefully in a paper.
-- MBPP execution evaluates generated code. Use sandboxing for serious experiments.
+- External MIPROv2 and GEPA integrations require optional packages (`dspy-ai`, `gepa`).
+  Use the provided `verify()` classmethod on each baseline before calling `compile()`.
+- `MBPPPassAtOneMetric` runs generated code in a subprocess with timeout and Unix
+  resource limits (256 MB RAM, CPU-seconds). For high-security environments, run
+  inside a container or VM.
+- The LinUCB regret bound assumes a fixed graph topology, a linear reward model,
+  bounded i.i.d. rewards in [0,1], and ||phi||_2 ≤ 1 features. It matches the
+  Chu et al. (2011) result and holds per arm; see `ppg/bandits/linucb.py` for
+  the precise statement.
 
 ## Citation
 

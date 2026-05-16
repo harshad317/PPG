@@ -54,6 +54,30 @@ class MIPROv2Baseline:
         response, tokens = baseline.run(test_example)
     """
 
+    @classmethod
+    def verify(cls) -> dict:
+        """
+        Check DSPy availability before calling compile().
+
+        Returns dict with keys:
+          available   : bool
+          version     : str (if available)
+          has_miprov2 : bool (if available)
+          error       : str (if not available)
+        """
+        try:
+            import dspy
+            return {
+                "available":    True,
+                "version":      getattr(dspy, "__version__", "unknown"),
+                "has_miprov2":  hasattr(dspy, "MIPROv2"),
+            }
+        except ImportError:
+            return {
+                "available": False,
+                "error":     "dspy-ai not installed: pip install dspy-ai",
+            }
+
     def __init__(
         self,
         metric: TaskMetric,
@@ -211,6 +235,31 @@ class GEPABaseline:
         self._n_eval           = n_eval_examples
         self._rng              = random.Random(seed)
         self._optimized_prompt: Optional[str] = None
+
+    @classmethod
+    def verify(cls) -> dict:
+        """
+        Check GEPA availability before calling compile().
+
+        Returns dict with keys:
+          available         : bool
+          has_optimize_fn   : bool (if available)
+          error             : str (if not available)
+        """
+        try:
+            import gepa.optimize_anything as oa
+            return {
+                "available":        True,
+                "has_optimize_fn":  hasattr(oa, "optimize_anything"),
+            }
+        except ImportError:
+            return {
+                "available": False,
+                "error": (
+                    "gepa not installed: pip install gepa  "
+                    "or: pip install git+https://github.com/gepa-ai/gepa.git"
+                ),
+            }
 
     # ------------------------------------------------------------------
 
