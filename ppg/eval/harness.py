@@ -332,26 +332,64 @@ class EvalHarness:
 
         return EvalReport(ppg=ppg_metrics, baselines=base_metrics)
 
-    def evaluate_one(self, name: str, examples: list[EvalExample]) -> BaselineMetrics:
+    def evaluate_one(self, name: str, examples: list[EvalExample],
+                     lm_counter=None) -> BaselineMetrics:
         """
-        Run and score exactly one method, print its per-method table, return metrics.
+        Run one method on a single split, print table, return metrics.
 
-        name : "ppg" or any baseline name in SUPPORTED_BASELINES
+        name       : "ppg" or any baseline name
+        lm_counter : optional CountingLMClient; when supplied, lm_calls in the
+                     returned BaselineMetrics reflects actual complete() calls
         """
         if not examples:
             raise ValueError("examples must be non-empty")
+        results = self.evaluate_splits(
+            name, {self._cfg.split_name: examples}, lm_counter=lm_counter
+        )
+        return results[self._cfg.split_name]
 
-        m = self._run_ppg(examples) if name == "ppg" else self._run_baseline(name, examples)
-        self._print_method_table(name, m)
-        return m
+    def evaluate_splits(
+        self,
+        name:        str,
+        splits:      "dict[str, list[EvalExample]]",
+        lm_counter=None,
+    ) -> "dict[str, BaselineMetrics]":
+        """
+        Run one method on multiple named splits, print a combined table.
+
+        splits     : ordered mapping of split_name → examples,
+                     e.g. {"train": train_ex, "val": val_ex, "test": test_ex}
+        lm_counter : optional CountingLMClient; when supplied, resets before
+                     each split and stores actual call counts in BaselineMetrics
+        """
+        if not splits:
+            raise ValueError("splits must be non-empty")
+        results: dict[str, BaselineMetrics] = {}
+        for split_name, examples in splits.items():
+            if not examples:
+                continue
+            if lm_counter is not None:
+                lm_counter.reset()
+            m = self._run_ppg(examples) if name == "ppg" else self._run_baseline(name, examples)
+            if lm_counter is not None:
+                m = BaselineMetrics(
+                    name=m.name,
+                    task_scores=m.task_scores,
+                    token_counts=m.token_counts,
+                    constraint_scores=m.constraint_scores,
+                    lm_calls=lm_counter.call_count,
+                )
+            results[split_name] = m
+        self._print_splits_table(name, results)
+        return results
 
     def register_external(self, name: str, baseline) -> None:
-        """Register a pre-compiled external baseline so it can be used in evaluate_one()."""
+        """Register a pre-compiled external baseline so it can be used in evaluate_splits()."""
         self._external[name] = baseline
 
-    def _print_method_table(self, name: str, m: "BaselineMetrics") -> None:
-        """Print a rich summary table for one method after its eval run."""
-        if not self._cfg.show_method_tables:
+    def _print_splits_table(self, name: str, splits: "dict[str, BaselineMetrics]") -> None:
+        """Print a rich summary table with one row per split."""
+        if not self._cfg.show_method_tables or not splits:
             return
         try:
             from rich.console import Console
@@ -359,17 +397,15 @@ class EvalHarness:
             from rich.panel import Panel
             from rich import box
         except ImportError:
-            split = self._cfg.split_name
             print(f"\n  {name}")
             print(f"  | Split   | Score | StdDev  | AvgTok  | API calls |")
             print(f"  |---------|-------|---------|---------|-----------|")
-            print(f"  | {split:<7} | {m.task_accuracy:.3f} | {m.std_task:.3f}   "
-                  f"| {m.mean_tokens:>7.1f} | {m.lm_calls:>9} |")
+            for split_name, m in splits.items():
+                print(f"  | {split_name:<7} | {m.task_accuracy:.3f} | {m.std_task:.3f}   "
+                      f"| {m.mean_tokens:>7.1f} | {m.lm_calls:>9} |")
             return
 
         is_ppg = name == "ppg"
-        split  = self._cfg.split_name
-
         table = Table(box=box.ROUNDED, show_lines=False, header_style="bold cyan",
                       padding=(0, 1), show_header=True)
         table.add_column("Split",     style="bold",    no_wrap=True)
@@ -378,10 +414,11 @@ class EvalHarness:
         table.add_column("AvgTok",    justify="right", min_width=7)
         table.add_column("API calls", justify="right", min_width=9)
 
-        score_str = (f"[bold green]{m.task_accuracy:.3f}[/bold green]"
-                     if is_ppg else f"{m.task_accuracy:.3f}")
-        table.add_row(split, score_str, f"{m.std_task:.3f}",
-                      f"{m.mean_tokens:.1f}", str(m.lm_calls))
+        for split_name, m in splits.items():
+            score_str = (f"[bold green]{m.task_accuracy:.3f}[/bold green]"
+                         if is_ppg else f"{m.task_accuracy:.3f}")
+            table.add_row(split_name, score_str, f"{m.std_task:.3f}",
+                          f"{m.mean_tokens:.1f}", str(m.lm_calls))
 
         title_style = "bold cyan" if is_ppg else "bold white"
         Console().print(

@@ -3,6 +3,7 @@ from .clients import (
     OpenAIClient,
     AnthropicConfig,
     AnthropicClient,
+    CountingLMClient,
     DiskCachedLMClient,
 )
 
@@ -11,5 +12,6 @@ __all__ = [
     "OpenAIClient",
     "AnthropicConfig",
     "AnthropicClient",
+    "CountingLMClient",
     "DiskCachedLMClient",
 ]

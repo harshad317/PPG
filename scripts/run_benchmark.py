@@ -415,7 +415,8 @@ def main():
     # 2. Build LM client
     # ------------------------------------------------------------------
     _step_rule(2, 6, "Building LM client...")
-    lm = make_lm(args.provider, args.model, cache_dir)
+    from ppg.lm.clients import CountingLMClient
+    lm = CountingLMClient(make_lm(args.provider, args.model, cache_dir))
 
     # ------------------------------------------------------------------
     # 3. Build graph + PPG components
@@ -477,12 +478,15 @@ def main():
     # 4. Train PPG
     # ------------------------------------------------------------------
     _step_rule(4, 6, f"Training PPG ({args.warmup}+{args.train_ep}+{args.finetune} episodes)...")
+    lm.reset()
     t0 = time.time()
     stats = trainer.train(train_examples)
     train_time = time.time() - t0
+    train_api_calls = lm.reset()
     _info(f"done in {train_time:.0f}s  "
           f"mean_reward={stats.mean_reward('train'):.4f}  "
-          f"task_acc={stats.task_accuracy('train'):.4f}")
+          f"task_acc={stats.task_accuracy('train'):.4f}  "
+          f"api_calls={train_api_calls}")
 
     # ------------------------------------------------------------------
     # 5+. Evaluate one method at a time — each method fully done before next.
@@ -514,10 +518,11 @@ def main():
     )
 
     all_metrics: dict[str, "BaselineMetrics"] = {}
+    _splits = {"train": train_ex, "val": val_ex, "test": test_ex}
 
     # -- PPG --
     _eval_step("Evaluating PPG...")
-    all_metrics["ppg"] = harness.evaluate_one("ppg", test_ex)
+    all_metrics["ppg"] = harness.evaluate_splits("ppg", _splits, lm_counter=lm)["test"]
 
     # -- MIPROv2: compile then eval --
     if args.run_mipro:
@@ -532,7 +537,7 @@ def main():
             mipro = MIPROv2Baseline(metric=metric, auto="heavy")
             mipro.compile(trainset=train_ex, valset=val_ex, seed_instructions=seed_prompt)
             harness.register_external("miprov2", mipro)
-            all_metrics["miprov2"] = harness.evaluate_one("miprov2", test_ex)
+            all_metrics["miprov2"] = harness.evaluate_splits("miprov2", _splits, lm_counter=lm)["test"]
         except ImportError as e:
             _info(f"SKIP — {e}")
 
@@ -557,14 +562,14 @@ def main():
                 objective=objective,
             )
             harness.register_external("gepa", gepa)
-            all_metrics["gepa"] = harness.evaluate_one("gepa", test_ex)
+            all_metrics["gepa"] = harness.evaluate_splits("gepa", _splits, lm_counter=lm)["test"]
         except ImportError as e:
             _info(f"SKIP — {e}")
 
     # -- Internal baselines: one at a time --
     for name in internal_baselines:
         _eval_step(f"Evaluating {name}...")
-        all_metrics[name] = harness.evaluate_one(name, test_ex)
+        all_metrics[name] = harness.evaluate_splits(name, _splits, lm_counter=lm)["test"]
 
     # Assemble final report from accumulated per-method results
     ppg_m = all_metrics.pop("ppg")

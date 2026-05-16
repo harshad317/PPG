@@ -145,6 +145,37 @@ class AnthropicClient:
 # DiskCachedLMClient
 # ---------------------------------------------------------------------------
 
+class CountingLMClient:
+    """
+    Wraps any LMClient and counts every complete() call.
+    Thread-safe — safe to use with PPGTrainer(n_workers > 1).
+
+    reset() returns the current count and atomically resets to zero.
+    """
+
+    def __init__(self, lm):
+        self._lm    = lm
+        self._count = 0
+        self._lock  = threading.Lock()
+
+    def complete(self, prompt: str) -> str:
+        with self._lock:
+            self._count += 1
+        return self._lm.complete(prompt)
+
+    @property
+    def call_count(self) -> int:
+        with self._lock:
+            return self._count
+
+    def reset(self) -> int:
+        """Return current count and reset to zero."""
+        with self._lock:
+            n = self._count
+            self._count = 0
+            return n
+
+
 class DiskCachedLMClient:
     """
     Caches LM responses to a JSON file on disk.
