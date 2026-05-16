@@ -307,6 +307,32 @@ def build_best_path_prompt(graph) -> str:
 
 
 # ---------------------------------------------------------------------------
+# DSPy call counter — reads dspy.LM.history (available in DSPy >= 2.4)
+# ---------------------------------------------------------------------------
+
+class _DSPyCounter:
+    """
+    Counts DSPy LM calls by reading dspy.LM.history.
+
+    Satisfies the same reset()/call_count interface as CountingLMClient so it
+    can be passed as lm_counter to harness.evaluate_splits().
+    """
+    def __init__(self, dspy_lm):
+        self._lm   = dspy_lm
+        self._mark = len(getattr(dspy_lm, "history", []))
+
+    def reset(self) -> int:
+        hist = getattr(self._lm, "history", [])
+        n    = len(hist) - self._mark
+        self._mark = len(hist)
+        return n
+
+    @property
+    def call_count(self) -> int:
+        return len(getattr(self._lm, "history", [])) - self._mark
+
+
+# ---------------------------------------------------------------------------
 # LM client factory
 # ---------------------------------------------------------------------------
 
@@ -554,16 +580,18 @@ def main():
             import dspy
             dspy_model_str = f"openai/{args.model}" if args.provider == "openai" \
                              else f"anthropic/{args.model}"
-            dspy.configure(lm=dspy.LM(dspy_model_str))
+            dspy_lm = dspy.LM(dspy_model_str)
+            dspy.configure(lm=dspy_lm)
+            mipro_counter = _DSPyCounter(dspy_lm)
             from ppg.eval.external import MIPROv2Baseline
             seed_prompt = build_seed_prompt(graph)
             mipro = MIPROv2Baseline(metric=metric, auto="heavy")
-            lm.reset()
+            mipro_counter.reset()
             mipro.compile(trainset=train_ex, valset=val_ex, seed_instructions=seed_prompt)
-            mipro_opt_calls = lm.reset()
+            mipro_opt_calls = mipro_counter.reset()
             harness.register_external("miprov2", mipro)
             all_metrics["miprov2"] = harness.evaluate_splits(
-                "miprov2", _splits, lm_counter=lm, opt_calls=mipro_opt_calls
+                "miprov2", _splits, lm_counter=mipro_counter, opt_calls=mipro_opt_calls
             )["test"]
             optimized_prompts["miprov2"] = mipro._prompt_prefix or seed_prompt
         except ImportError as e:
@@ -575,6 +603,12 @@ def main():
         try:
             import dspy as _dspy
             from ppg.eval.external import GEPABaseline
+            # Configure DSPy main LM (needed even if --run-mipro was skipped).
+            _gepa_model_str = f"openai/{args.model}" if args.provider == "openai" \
+                              else f"anthropic/{args.model}"
+            _gepa_dspy_lm = _dspy.LM(_gepa_model_str)
+            _dspy.configure(lm=_gepa_dspy_lm)
+            gepa_counter = _DSPyCounter(_gepa_dspy_lm)
             seed_prompt = build_seed_prompt(graph)
             reflection_lm = (
                 _dspy.LM(f"openai/{args.reflection_model}")
@@ -586,16 +620,16 @@ def main():
                 max_metric_calls=args.gepa_calls,
                 seed=args.seed,
             )
-            lm.reset()
+            gepa_counter.reset()
             gepa.compile(
                 trainset=train_ex,
                 valset=val_ex,
                 seed_instructions=seed_prompt,
             )
-            gepa_opt_calls = lm.reset()
+            gepa_opt_calls = gepa_counter.reset()
             harness.register_external("gepa", gepa)
             all_metrics["gepa"] = harness.evaluate_splits(
-                "gepa", _splits, lm_counter=lm, opt_calls=gepa_opt_calls
+                "gepa", _splits, lm_counter=gepa_counter, opt_calls=gepa_opt_calls
             )["test"]
             optimized_prompts["gepa"] = gepa._prompt_prefix or seed_prompt
         except ImportError as e:
