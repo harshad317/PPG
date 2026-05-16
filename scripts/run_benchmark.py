@@ -372,12 +372,33 @@ def main():
     cache_dir     = None if args.no_cache else args.cache_dir
     bench         = args.benchmark
 
-    print(f"\n=== PPG Benchmark: {bench} | model: {args.model} ===\n")
+    try:
+        from rich.console import Console as _Console
+        from rich.rule import Rule as _Rule
+        _console = _Console()
+        def _header(text: str) -> None:
+            _console.rule(f"[bold]{text}[/bold]")
+        def _step_rule(n: int, total: int, label: str) -> None:
+            _console.rule(
+                f"[cyan]\\[[bold]{n}/{total}[/bold]][/cyan] [white]{label}[/white]",
+                style="dim",
+            )
+        def _info(text: str) -> None:
+            _console.print(f"  [dim]{text}[/dim]")
+    except ImportError:
+        def _header(text: str) -> None:
+            print(f"\n=== {text} ===\n")
+        def _step_rule(n: int, total: int, label: str) -> None:
+            print(f"[{n}/{total}] {label}")
+        def _info(text: str) -> None:
+            print(f"      {text}")
+
+    _header(f"PPG Benchmark: {bench}  |  model: {args.model}")
 
     # ------------------------------------------------------------------
     # 1. Load data
     # ------------------------------------------------------------------
-    print("[1/6] Loading dataset splits...")
+    _step_rule(1, 6, "Loading dataset splits...")
     train_ex, val_ex, test_ex, metric, constraint_checker, objective = load_splits(
         benchmark=bench,
         n_train=args.train_n,
@@ -387,19 +408,19 @@ def main():
         bbh_task=args.bbh_task,
         mmlu_subject=args.mmlu_subject,
     )
-    print(f"      train={len(train_ex)}  val={len(val_ex)}  test={len(test_ex)}")
+    _info(f"train={len(train_ex)}  val={len(val_ex)}  test={len(test_ex)}")
     train_examples = to_training(train_ex)
 
     # ------------------------------------------------------------------
     # 2. Build LM client
     # ------------------------------------------------------------------
-    print("[2/6] Building LM client...")
+    _step_rule(2, 6, "Building LM client...")
     lm = make_lm(args.provider, args.model, cache_dir)
 
     # ------------------------------------------------------------------
     # 3. Build graph + PPG components
     # ------------------------------------------------------------------
-    print("[3/6] Building PPG graph and components...")
+    _step_rule(3, 6, "Building PPG graph and components...")
     from ppg.data.fragments import build_graph
     from ppg.bandits.linucb import LinUCBPolicy
     from ppg.core import ExecutorConfig, FeatureExtractor, PPGExecutor
@@ -455,11 +476,11 @@ def main():
     # ------------------------------------------------------------------
     # 4. Train PPG
     # ------------------------------------------------------------------
-    print(f"[4/6] Training PPG ({args.warmup}+{args.train_ep}+{args.finetune} episodes)...")
+    _step_rule(4, 6, f"Training PPG ({args.warmup}+{args.train_ep}+{args.finetune} episodes)...")
     t0 = time.time()
     stats = trainer.train(train_examples)
     train_time = time.time() - t0
-    print(f"      done in {train_time:.0f}s  "
+    _info(f"done in {train_time:.0f}s  "
           f"mean_reward={stats.mean_reward('train'):.4f}  "
           f"task_acc={stats.task_accuracy('train'):.4f}")
 
@@ -473,12 +494,12 @@ def main():
 
     internal_baselines = ["flat_all", "static_best", "random_gating", "highest_utility"]
     n_methods = 1 + int(args.run_mipro) + int(args.run_gepa) + len(internal_baselines)
-    step = 0
+    eval_step = 0
 
-    def _step(label: str) -> str:
-        nonlocal step
-        step += 1
-        return f"[{step}/{n_methods}] {label}"
+    def _eval_step(label: str) -> None:
+        nonlocal eval_step
+        eval_step += 1
+        _step_rule(eval_step, n_methods, label)
 
     harness = EvalHarness(
         executor=executor,
@@ -495,12 +516,12 @@ def main():
     all_metrics: dict[str, "BaselineMetrics"] = {}
 
     # -- PPG --
-    print(_step("Evaluating PPG..."))
+    _eval_step("Evaluating PPG...")
     all_metrics["ppg"] = harness.evaluate_one("ppg", test_ex)
 
     # -- MIPROv2: compile then eval --
     if args.run_mipro:
-        print(_step("Compiling + evaluating MIPROv2 (auto='heavy')..."))
+        _eval_step("Compiling + evaluating MIPROv2 (auto='heavy')...")
         try:
             import dspy
             dspy_model_str = f"openai/{args.model}" if args.provider == "openai" \
@@ -513,11 +534,11 @@ def main():
             harness.register_external("miprov2", mipro)
             all_metrics["miprov2"] = harness.evaluate_one("miprov2", test_ex)
         except ImportError as e:
-            print(f"      SKIP — {e}")
+            _info(f"SKIP — {e}")
 
     # -- GEPA: compile then eval --
     if args.run_gepa:
-        print(_step(f"Compiling + evaluating GEPA (max_metric_calls={args.gepa_calls})..."))
+        _eval_step(f"Compiling + evaluating GEPA (max_metric_calls={args.gepa_calls})...")
         try:
             from ppg.eval.external import GEPABaseline
             seed_prompt = build_seed_prompt(graph)
@@ -538,11 +559,11 @@ def main():
             harness.register_external("gepa", gepa)
             all_metrics["gepa"] = harness.evaluate_one("gepa", test_ex)
         except ImportError as e:
-            print(f"      SKIP — {e}")
+            _info(f"SKIP — {e}")
 
     # -- Internal baselines: one at a time --
     for name in internal_baselines:
-        print(_step(f"Evaluating {name}..."))
+        _eval_step(f"Evaluating {name}...")
         all_metrics[name] = harness.evaluate_one(name, test_ex)
 
     # Assemble final report from accumulated per-method results
@@ -552,19 +573,63 @@ def main():
     # ------------------------------------------------------------------
     # Print results
     # ------------------------------------------------------------------
-    table = report.comparison_table()
-    print(f"\n{'System':<18} {'TaskAcc':>8} {'StdTask':>8} {'AvgTok':>8} "
-          f"{'Constraint':>11} {'LMCalls':>8}")
-    print("-" * 65)
-    for row in table:
-        print(f"{row['name']:<18} {row['task_accuracy']:>8.4f} {row['std_task']:>8.4f} "
-              f"{row['mean_tokens']:>8.1f} {row['mean_constraint']:>11.4f} "
-              f"{row['lm_calls']:>8}")
-
-    winner = report.winner()
+    rows        = report.comparison_table()
+    winner      = report.winner()
     ppg_vs_flat = report.ppg_delta("flat_all")
-    print(f"\nWinner: {winner}  |  PPG vs flat_all: {ppg_vs_flat:+.4f}")
-    print(f"Training time: {train_time:.0f}s")
+
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        from rich import box
+        from rich.panel import Panel
+
+        rtable = Table(
+            title=f"[bold]Results — {bench}  |  {args.model}[/bold]",
+            box=box.ROUNDED,
+            show_lines=False,
+            header_style="bold cyan",
+            padding=(0, 1),
+        )
+        rtable.add_column("System",     style="bold",    no_wrap=True, min_width=16)
+        rtable.add_column("TaskAcc",    justify="right", min_width=8)
+        rtable.add_column("StdTask",    justify="right", min_width=8)
+        rtable.add_column("AvgTok",     justify="right", min_width=8)
+        rtable.add_column("Constraint", justify="right", min_width=11)
+        rtable.add_column("LM Calls",   justify="right", min_width=9)
+
+        for row in rows:
+            is_winner = row["name"] == winner
+            is_ppg    = row["name"] == "ppg"
+            name_str  = (f"[bold green]{row['name']}[/bold green]" if is_winner
+                         else f"[cyan]{row['name']}[/cyan]" if is_ppg
+                         else row["name"])
+            acc_str   = (f"[bold green]{row['task_accuracy']:.4f}[/bold green]"
+                         if is_winner else f"{row['task_accuracy']:.4f}")
+            rtable.add_row(
+                name_str,
+                acc_str,
+                f"{row['std_task']:.4f}",
+                f"{row['mean_tokens']:.1f}",
+                f"{row['mean_constraint']:.4f}",
+                str(row["lm_calls"]),
+            )
+
+        rc = Console()
+        rc.print(rtable)
+        rc.print(f"  Winner: [bold green]{winner}[/bold green]  "
+                 f"|  PPG vs flat_all: [{'green' if ppg_vs_flat >= 0 else 'red'}]"
+                 f"{ppg_vs_flat:+.4f}[/{'green' if ppg_vs_flat >= 0 else 'red'}]  "
+                 f"|  Training: {train_time:.0f}s")
+    except ImportError:
+        print(f"\n{'System':<18} {'TaskAcc':>8} {'StdTask':>8} {'AvgTok':>8} "
+              f"{'Constraint':>11} {'LMCalls':>8}")
+        print("-" * 65)
+        for row in rows:
+            print(f"{row['name']:<18} {row['task_accuracy']:>8.4f} {row['std_task']:>8.4f} "
+                  f"{row['mean_tokens']:>8.1f} {row['mean_constraint']:>11.4f} "
+                  f"{row['lm_calls']:>8}")
+        print(f"\nWinner: {winner}  |  PPG vs flat_all: {ppg_vs_flat:+.4f}")
+        print(f"Training time: {train_time:.0f}s")
 
     # ------------------------------------------------------------------
     # Save results

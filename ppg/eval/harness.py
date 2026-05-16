@@ -350,16 +350,46 @@ class EvalHarness:
         self._external[name] = baseline
 
     def _print_method_table(self, name: str, m: "BaselineMetrics") -> None:
-        """Print a markdown summary table for one method after its eval run."""
+        """Print a rich summary table for one method after its eval run."""
         if not self._cfg.show_method_tables:
             return
-        split = self._cfg.split_name
-        sep   = "|---------|-------|---------|---------|-----------|"
-        print(f"\n  {name}")
-        print(f"  | Split   | Score | StdDev  | AvgTok  | API calls |")
-        print(f"  {sep}")
-        print(f"  | {split:<7} | {m.task_accuracy:.3f} | {m.std_task:.3f}   "
-              f"| {m.mean_tokens:>7.1f} | {m.lm_calls:>9} |")
+        try:
+            from rich.console import Console
+            from rich.table import Table
+            from rich.panel import Panel
+            from rich import box
+        except ImportError:
+            split = self._cfg.split_name
+            print(f"\n  {name}")
+            print(f"  | Split   | Score | StdDev  | AvgTok  | API calls |")
+            print(f"  |---------|-------|---------|---------|-----------|")
+            print(f"  | {split:<7} | {m.task_accuracy:.3f} | {m.std_task:.3f}   "
+                  f"| {m.mean_tokens:>7.1f} | {m.lm_calls:>9} |")
+            return
+
+        is_ppg = name == "ppg"
+        split  = self._cfg.split_name
+
+        table = Table(box=box.ROUNDED, show_lines=False, header_style="bold cyan",
+                      padding=(0, 1), show_header=True)
+        table.add_column("Split",     style="bold",    no_wrap=True)
+        table.add_column("Score",     justify="right", min_width=7)
+        table.add_column("StdDev",    justify="right", min_width=7)
+        table.add_column("AvgTok",    justify="right", min_width=7)
+        table.add_column("API calls", justify="right", min_width=9)
+
+        score_str = (f"[bold green]{m.task_accuracy:.3f}[/bold green]"
+                     if is_ppg else f"{m.task_accuracy:.3f}")
+        table.add_row(split, score_str, f"{m.std_task:.3f}",
+                      f"{m.mean_tokens:.1f}", str(m.lm_calls))
+
+        title_style = "bold cyan" if is_ppg else "bold white"
+        Console().print(
+            Panel(table,
+                  title=f"[{title_style}]{name}[/{title_style}]",
+                  expand=False),
+            end="\n",
+        )
 
     # ------------------------------------------------------------------
     # Parallel execution core
