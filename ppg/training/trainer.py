@@ -55,6 +55,7 @@ class TrainingExample:
     x:           str
     y_star:      str
     constraints: list[str] = field(default_factory=list)
+    metadata:    dict      = field(default_factory=dict)
 
 
 @dataclass
@@ -72,7 +73,7 @@ class TrainerConfig:
     # Phase lengths
     n_warmup_episodes:   int   = 200
     n_train_episodes:    int   = 1000
-    n_finetune_episodes: int   = 200
+    n_finetune_episodes: int   = 500
 
     # Exploration alphas
     alpha_train:    float = 0.5
@@ -80,8 +81,8 @@ class TrainerConfig:
 
     # Credit assignment probabilities per phase
     p_ablate_warmup:    float = 0.10
-    p_ablate_train:     float = 0.15
-    p_ablate_finetune:  float = 0.05
+    p_ablate_train:     float = 0.20
+    p_ablate_finetune:  float = 0.10
 
     # Checkpointing (disabled when None)
     checkpoint_dir:   Optional[str] = None
@@ -370,6 +371,7 @@ class PPGTrainer:
             x=example.x,
             y_star=example.y_star,
             constraints=example.constraints or None,
+            metadata=example.metadata or None,
         )
         return trace, reward_components
 
@@ -390,6 +392,8 @@ class PPGTrainer:
             x=example.x,
             y_star=example.y_star,
             rng=self._rng,
+            constraints=example.constraints or None,
+            metadata=example.metadata or None,
         )
 
         if self._train_policy:

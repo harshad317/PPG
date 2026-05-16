@@ -519,25 +519,27 @@ class RewardComputer:
         x:           str,
         y_star:      str,
         constraints: Optional[list[str]] = None,
+        metadata:    Optional[dict]      = None,
     ) -> RewardComponents:
         """
         Compute all reward components for one episode.
 
-        trace   : PathTrace returned by PPGExecutor.execute()
-        x       : original input (used for perturbations)
-        y_star  : ground-truth reference answer
+        trace       : PathTrace returned by PPGExecutor.execute()
+        x           : original input (used for perturbations)
+        y_star      : ground-truth reference answer
         constraints : list of constraint strings for r_constraint (IFBench)
+        metadata    : example metadata dict passed to constraint checker
         """
         if self.cfg.constraint_as_task and self.checker is not None:
             # Constraint-only benchmarks (IFEval, IFBench): constraint satisfaction
             # IS the task signal. r_task = checker score; r_constraint suppressed
             # to avoid double-counting in the total reward.
-            r_task       = self.checker.check(trace.lm_response, constraints or [])
+            r_task       = self.checker.check(trace.lm_response, constraints or [], metadata)
             r_constraint = 0.0
         else:
             r_task = self.metric.score(trace.lm_response, y_star)
             r_constraint = (
-                self.checker.check(trace.lm_response, constraints or [])
+                self.checker.check(trace.lm_response, constraints or [], metadata)
                 if self.checker is not None else 0.0
             )
 

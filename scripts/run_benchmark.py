@@ -257,7 +257,8 @@ def load_splits(
 def to_training(examples):
     from ppg.training.trainer import TrainingExample
     return [
-        TrainingExample(x=ex.x, y_star=ex.y_star, constraints=ex.constraints)
+        TrainingExample(x=ex.x, y_star=ex.y_star,
+                        constraints=ex.constraints, metadata=ex.metadata or {})
         for ex in examples
     ]
 
@@ -433,6 +434,8 @@ def main():
         assembler=assembler,
         task_metric=metric,
         config=CreditAssignerConfig(),
+        constraint_checker=constraint_checker,
+        constraint_as_task=constraint_as_task,
     )
     trainer   = PPGTrainer(
         executor=executor,

@@ -37,7 +37,7 @@ import numpy as np
 
 from ppg.core.executor import LMClient, PathTrace, PromptAssembler
 from ppg.core.graph import PPGraph
-from ppg.training.reward import TaskMetric
+from ppg.training.reward import ConstraintChecker, TaskMetric
 
 
 # ---------------------------------------------------------------------------
@@ -96,15 +96,19 @@ class CreditAssigner:
 
     def __init__(
         self,
-        lm:          LMClient,
-        assembler:   PromptAssembler,
-        task_metric: TaskMetric,
-        config:      Optional[CreditAssignerConfig] = None,
+        lm:                 LMClient,
+        assembler:          PromptAssembler,
+        task_metric:        TaskMetric,
+        config:             Optional[CreditAssignerConfig] = None,
+        constraint_checker: Optional[ConstraintChecker]   = None,
+        constraint_as_task: bool                          = False,
     ):
-        self.lm      = lm
-        self.asm     = assembler
-        self.metric  = task_metric
-        self.cfg     = config or CreditAssignerConfig()
+        self.lm                 = lm
+        self.asm                = assembler
+        self.metric             = task_metric
+        self.cfg                = config or CreditAssignerConfig()
+        self.checker            = constraint_checker
+        self.constraint_as_task = constraint_as_task
 
         # Cumulative stats for diagnostics
         self._n_assignments: int = 0
@@ -116,11 +120,13 @@ class CreditAssigner:
 
     def maybe_assign(
         self,
-        trace: PathTrace,
-        graph: PPGraph,
-        x:     str,
-        y_star: str,
-        rng:   np.random.Generator,
+        trace:       PathTrace,
+        graph:       PPGraph,
+        x:           str,
+        y_star:      str,
+        rng:         np.random.Generator,
+        constraints: Optional[list[str]] = None,
+        metadata:    Optional[dict]      = None,
     ) -> Optional[CreditAssignmentResult]:
         """
         With probability p_ablate, run one LOO step and update the ablated
@@ -130,11 +136,13 @@ class CreditAssigner:
 
         Parameters
         ----------
-        trace  : PathTrace from the current episode
-        graph  : PPGraph (nodes mutated in-place via update_utility)
-        x      : original input string
-        y_star : ground-truth reference answer
-        rng    : numpy Generator for reproducible sampling
+        trace       : PathTrace from the current episode
+        graph       : PPGraph (nodes mutated in-place via update_utility)
+        x           : original input string
+        y_star      : ground-truth reference answer
+        rng         : numpy Generator for reproducible sampling
+        constraints : constraint strings (used when constraint_as_task=True)
+        metadata    : example metadata dict passed to constraint checker
         """
         ablatable = self._ablatable_nodes(trace)
         if not ablatable or rng.uniform() >= self.cfg.p_ablate:
@@ -142,7 +150,7 @@ class CreditAssigner:
             return None
 
         node_id = ablatable[int(rng.integers(len(ablatable)))]
-        result  = self._run_loo(trace, graph, x, y_star, node_id)
+        result  = self._run_loo(trace, graph, x, y_star, node_id, constraints, metadata)
 
         # Update fragment utility (online mean)
         graph.nodes[node_id].update_utility(result.marginal)
@@ -152,27 +160,31 @@ class CreditAssigner:
 
     def force_assign(
         self,
-        trace:   PathTrace,
-        graph:   PPGraph,
-        x:       str,
-        y_star:  str,
-        node_id: str,
+        trace:       PathTrace,
+        graph:       PPGraph,
+        x:           str,
+        y_star:      str,
+        node_id:     str,
+        constraints: Optional[list[str]] = None,
+        metadata:    Optional[dict]      = None,
     ) -> CreditAssignmentResult:
         """
         Force LOO for a specific node regardless of p_ablate.
         Used in tests and for targeted analysis of specific fragments.
         """
-        result = self._run_loo(trace, graph, x, y_star, node_id)
+        result = self._run_loo(trace, graph, x, y_star, node_id, constraints, metadata)
         graph.nodes[node_id].update_utility(result.marginal)
         self._n_assignments += 1
         return result
 
     def assign_all(
         self,
-        trace:  PathTrace,
-        graph:  PPGraph,
-        x:      str,
-        y_star: str,
+        trace:       PathTrace,
+        graph:       PPGraph,
+        x:           str,
+        y_star:      str,
+        constraints: Optional[list[str]] = None,
+        metadata:    Optional[dict]      = None,
     ) -> list[CreditAssignmentResult]:
         """
         Run LOO for every ablatable node in the path.
@@ -181,7 +193,7 @@ class CreditAssigner:
         """
         results = []
         for node_id in self._ablatable_nodes(trace):
-            result = self._run_loo(trace, graph, x, y_star, node_id)
+            result = self._run_loo(trace, graph, x, y_star, node_id, constraints, metadata)
             graph.nodes[node_id].update_utility(result.marginal)
             self._n_assignments += 1
             results.append(result)
@@ -238,24 +250,36 @@ class CreditAssigner:
 
     def _run_loo(
         self,
-        trace:   PathTrace,
-        graph:   PPGraph,
-        x:       str,
-        y_star:  str,
-        node_id: str,
+        trace:       PathTrace,
+        graph:       PPGraph,
+        x:           str,
+        y_star:      str,
+        node_id:     str,
+        constraints: Optional[list[str]] = None,
+        metadata:    Optional[dict]      = None,
     ) -> CreditAssignmentResult:
         """
         Compute marginal = r_task(full) - r_task(path_without_node_id).
+
+        When constraint_as_task=True and a constraint_checker is present,
+        scores are computed via the checker (e.g. IFBenchConstraintChecker)
+        rather than the task metric, matching the training reward signal.
         """
         # Full path score (re-score from cached response — no extra LM call)
-        full_score = self.metric.score(trace.lm_response, y_star)
+        if self.constraint_as_task and self.checker is not None:
+            full_score = self.checker.check(trace.lm_response, constraints or [], metadata)
+        else:
+            full_score = self.metric.score(trace.lm_response, y_star)
 
         # Ablated path: remove node_id, re-assemble, call LM
-        ablated_ids = [n for n in trace.node_ids if n != node_id]
-        ctx = {"input": x}
-        ablated_prompt   = self.asm.assemble(ablated_ids, ctx)
+        ablated_ids      = [n for n in trace.node_ids if n != node_id]
+        ablated_prompt   = self.asm.assemble(ablated_ids, {"input": x})
         ablated_response = self.lm.complete(ablated_prompt)
-        ablated_score    = self.metric.score(ablated_response, y_star)
+
+        if self.constraint_as_task and self.checker is not None:
+            ablated_score = self.checker.check(ablated_response, constraints or [], metadata)
+        else:
+            ablated_score = self.metric.score(ablated_response, y_star)
 
         marginal = full_score - ablated_score
 
