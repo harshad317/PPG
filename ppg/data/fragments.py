@@ -106,17 +106,30 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
     # -----------------------------------------------------------------------
     "ifeval": {
         "task_framing": [
-            # Primary: surface constraints to the model before it starts
+            # v1: direct compliance framing — minimal preamble, just follow
             (
                 "Complete the following task. "
                 "Read ALL instructions carefully before writing your response.\n\n"
                 "{input}"
             ),
-            # Variant: decompose then respond
+            # v2: explicit constraint decomposition before responding
             (
                 "You will respond to the prompt below. "
                 "First identify every explicit constraint (format, length, style, content). "
                 "Then write a response that satisfies ALL of them.\n\n"
+                "{input}"
+            ),
+            # v3: strict compliance mode — treat each requirement as non-negotiable
+            (
+                "Follow every instruction below exactly as stated. "
+                "Treat each requirement as a hard constraint that cannot be omitted or approximated.\n\n"
+                "{input}"
+            ),
+            # v4: constraint-type tagging — classify then satisfy
+            (
+                "Read the prompt below and tag each constraint by type "
+                "(keyword / format / length / tone / language / structure). "
+                "Then write a response satisfying every tagged constraint.\n\n"
                 "{input}"
             ),
         ],
@@ -130,27 +143,46 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
             ),
         ],
         "reasoning_style": [
-            # Primary: constraint-audit before writing
+            # v1: numbered checklist audit before writing
             (
                 "Before responding, list each constraint you identified, numbered:\n"
                 "1. [constraint]\n2. [constraint]\n...\n\n"
                 "Then write your response ensuring each constraint is satisfied."
             ),
-            # Variant: implicit planning
+            # v2: silent planning — no visible scratchpad, just produce the response
             (
                 "Carefully identify every constraint in the instructions. "
                 "Plan your response to satisfy each one. "
                 "Then write the response."
+            ),
+            # v3: write first, then self-verify and correct
+            (
+                "Write your response. "
+                "Then re-read every constraint and verify your response meets each one. "
+                "If any constraint is violated, rewrite the response."
+            ),
+            # v4: constraint-priority ordering — address hardest constraints first
+            (
+                "Rank the constraints from hardest to easiest to satisfy. "
+                "Build your response starting from the hardest constraint, "
+                "then layer in the remaining ones. "
+                "Output only the final response."
             ),
         ],
         "compression": [
             "Be concise while still satisfying every constraint. No padding.",
         ],
         "output_contract": [
-            # IFEval has no fixed answer format; just enforce constraint compliance
+            # v1: general compliance reminder
             (
                 "Your response must satisfy every constraint in the instructions. "
                 "Do not include any text outside the requested response format."
+            ),
+            # v2: self-audit gate before finalizing
+            (
+                "Before outputting your final response, silently verify: "
+                "does it satisfy every stated constraint? "
+                "If not, correct it. Output only the compliant response."
             ),
         ],
     },
