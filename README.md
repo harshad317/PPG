@@ -441,8 +441,8 @@ datasets into `EvalExample` objects and expose recommended metrics.
 | Benchmark | Loader | Default/recommended metric |
 | --- | --- | --- |
 | GSM8K | `GSM8KLoader` | `NumericExactMatchMetric` |
-| IFEval | `IFEvalLoader` | `ExactMatchMetric` plus `KeywordConstraintChecker` proxy |
-| IFBench | `IFBenchLoader` | `ExactMatchMetric` plus `KeywordConstraintChecker` proxy |
+| IFEval | `IFEvalLoader` | `ExactMatchMetric` + `IFEvalOfficialChecker` (keyword fallback when library absent) |
+| IFBench | `IFBenchLoader` | `ExactMatchMetric` + `IFBenchConstraintChecker` (type-dispatched rule verifier) |
 | HotpotQA | `HotpotQALoader` | `F1Metric` |
 | DROP | `DROPLoader` | `F1Metric` |
 | MBPP | `MBPPLoader` | `MBPPPassAtOneMetric` |
@@ -516,6 +516,7 @@ ppg/
     graph.py        # PromptFragment, Guard, PPGraph, PPGraphBuilder
     features.py     # RuntimeFeatures and feature extraction
     executor.py     # FSM execution, routing, prompt assembly
+    tokenizer.py    # Token counting (tiktoken cl100k_base with word-split fallback)
   bandits/
     linucb.py       # Edge-factored LinUCB policy
   training/
@@ -590,10 +591,6 @@ The last verified local run before this README update was:
 
 ## Known Limitations
 
-- IFEval and IFBench currently use a lightweight keyword-based constraint checker for
-  development. Paper results should use official constraint verifiers.
-- Token counting uses whitespace-split proxies in several paths. For final experiments,
-  replace or wrap these with tokenizer-specific accounting.
 - External MIPROv2 and GEPA integrations require optional packages and live verification
   in the target environment.
 - The regret statement applies to the fixed-topology, edge-factored contextual bandit
