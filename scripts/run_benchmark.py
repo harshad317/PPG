@@ -585,7 +585,8 @@ def main():
             mipro_counter = _DSPyCounter(dspy_lm)
             from ppg.eval.external import MIPROv2Baseline
             seed_prompt = build_seed_prompt(graph)
-            mipro = MIPROv2Baseline(metric=metric, auto="heavy")
+            mipro = MIPROv2Baseline(metric=metric, auto="heavy",
+                                    constraint_checker=constraint_checker)
             mipro_counter.reset()
             mipro.compile(trainset=train_ex, valset=val_ex, seed_instructions=seed_prompt)
             mipro_opt_calls = mipro_counter.reset()
@@ -619,6 +620,7 @@ def main():
                 reflection_lm=reflection_lm,
                 max_metric_calls=args.gepa_calls,
                 seed=args.seed,
+                constraint_checker=constraint_checker,
             )
             gepa_counter.reset()
             gepa.compile(

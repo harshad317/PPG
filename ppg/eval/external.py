@@ -80,11 +80,13 @@ class MIPROv2Baseline:
 
     def __init__(
         self,
-        metric: TaskMetric,
-        auto:   str = "medium",
+        metric:             TaskMetric,
+        auto:               str = "medium",
+        constraint_checker: object = None,
     ):
         self._metric        = metric
         self._auto          = auto
+        self._checker       = constraint_checker
         self._program       = None   # set by compile()
         self._prompt_prefix = ""     # optimized instructions extracted after compile()
 
@@ -116,20 +118,27 @@ class MIPROv2Baseline:
                 "DSPy required for MIPROv2Baseline: pip install dspy-ai"
             ) from None
 
-        metric = self._metric
+        metric  = self._metric
+        checker = self._checker
 
-        dspy_train = [
-            dspy.Example(input=ex.x, y_star=ex.y_star).with_inputs("input")
-            for ex in trainset
-        ]
-        dspy_val = [
-            dspy.Example(input=ex.x, y_star=ex.y_star).with_inputs("input")
-            for ex in valset
-        ] if valset else None
+        def _make_ex(ex):
+            return dspy.Example(
+                input=ex.x,
+                y_star=ex.y_star,
+                constraints=getattr(ex, "constraints", None) or [],
+                metadata=getattr(ex, "metadata", None) or {},
+            ).with_inputs("input")
+
+        dspy_train = [_make_ex(ex) for ex in trainset]
+        dspy_val   = [_make_ex(ex) for ex in valset] if valset else None
 
         def dspy_metric(example, prediction, trace=None):
             try:
-                response = getattr(prediction, "response", str(prediction))
+                response    = getattr(prediction, "response", str(prediction))
+                constraints = getattr(example, "constraints", None) or []
+                metadata    = getattr(example, "metadata", None) or {}
+                if constraints and checker is not None:
+                    return float(checker.check(response, constraints, metadata))
                 return float(metric.score(response, example.y_star))
             except Exception:
                 return 0.0
@@ -249,15 +258,17 @@ class GEPABaseline:
 
     def __init__(
         self,
-        metric:           TaskMetric,
-        reflection_lm:    object = None,
-        max_metric_calls: int = 150,
-        seed:             int = 42,
+        metric:             TaskMetric,
+        reflection_lm:      object = None,
+        max_metric_calls:   int = 150,
+        seed:               int = 42,
+        constraint_checker: object = None,
     ):
         self._metric           = metric
         self._reflection_lm    = reflection_lm
         self._max_metric_calls = max_metric_calls
         self._seed             = seed
+        self._checker          = constraint_checker
         self._program: Optional[object] = None
         self._prompt_prefix:  str = ""
 
@@ -293,22 +304,30 @@ class GEPABaseline:
             _SWF = None
 
         metric       = self._metric
+        checker      = self._checker
         instructions = seed_instructions
 
-        dspy_train = [
-            dspy.Example(input=ex.x, y_star=ex.y_star).with_inputs("input")
-            for ex in trainset
-        ]
-        dspy_val = [
-            dspy.Example(input=ex.x, y_star=ex.y_star).with_inputs("input")
-            for ex in valset
-        ] if valset else None
+        def _make_ex(ex):
+            return dspy.Example(
+                input=ex.x,
+                y_star=ex.y_star,
+                constraints=getattr(ex, "constraints", None) or [],
+                metadata=getattr(ex, "metadata", None) or {},
+            ).with_inputs("input")
+
+        dspy_train = [_make_ex(ex) for ex in trainset]
+        dspy_val   = [_make_ex(ex) for ex in valset] if valset else None
 
         def gepa_metric(gold, pred, trace=None, pred_name=None, pred_trace=None):
             """GEPAFeedbackMetric: return ScoreWithFeedback (DSPy 3.x) or (score, str) (2.x)."""
             try:
-                response = getattr(pred, "response", str(pred))
-                score    = float(metric.score(response, gold.y_star))
+                response    = getattr(pred, "response", str(pred))
+                constraints = getattr(gold, "constraints", None) or []
+                metadata    = getattr(gold, "metadata", None) or {}
+                if constraints and checker is not None:
+                    score = float(checker.check(response, constraints, metadata))
+                else:
+                    score = float(metric.score(response, gold.y_star))
             except Exception:
                 response = ""
                 score    = 0.0
