@@ -46,7 +46,6 @@ method into a full paper-grade evaluation.
 - [Project Structure](#project-structure)
 - [Research Roadmap](#research-roadmap)
 - [Development](#development)
-- [Known Limitations](#known-limitations)
 
 ## Why PPG
 
@@ -596,18 +595,6 @@ The last verified local run:
 ```text
 642 passed
 ```
-
-## Known Limitations
-
-- External MIPROv2 and GEPA integrations require optional packages (`dspy-ai`, `gepa`).
-  Use the provided `verify()` classmethod on each baseline before calling `compile()`.
-- `MBPPPassAtOneMetric` runs generated code in a subprocess with timeout and Unix
-  resource limits (256 MB RAM, CPU-seconds). For high-security environments, run
-  inside a container or VM.
-- The LinUCB regret bound assumes a fixed graph topology, a linear reward model,
-  bounded i.i.d. rewards in [0,1], and ||phi||_2 ≤ 1 features. It matches the
-  Chu et al. (2011) result and holds per arm; see `ppg/bandits/linucb.py` for
-  the precise statement.
 
 ## Citation
 
