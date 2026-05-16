@@ -1,0 +1,76 @@
+<svg width="1200" height="540" viewBox="0 0 1200 540" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">PPG architecture pipeline</title>
+  <desc id="desc">A colorful pipeline from input features through guards, LinUCB routing, prompt assembly, LM response, reward, and policy update.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="540" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FEFCE8"/>
+      <stop offset="0.55" stop-color="#ECFEFF"/>
+      <stop offset="1" stop-color="#FDF2F8"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="15" flood-color="#0F172A" flood-opacity="0.14"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="540" rx="26" fill="url(#bg)"/>
+  <text x="64" y="72" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="36" font-weight="900">Runtime architecture</text>
+  <text x="66" y="105" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="600">One input becomes a feature-conditioned path through typed prompt fragments.</text>
+
+  <g stroke="#CBD5E1" stroke-width="2" opacity="0.8">
+    <path d="M120 414 C278 344 368 443 528 381 C706 312 775 421 965 354 C1047 326 1106 341 1150 375"/>
+    <path d="M72 146 C248 198 381 116 540 170 C706 226 808 108 967 157 C1055 184 1107 174 1158 136"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="60" y="168" width="150" height="94" rx="18" fill="#38BDF8"/>
+    <text x="90" y="206" fill="#082F49" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="900">Input</text>
+    <text x="88" y="235" fill="#0C4A6E" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">x</text>
+
+    <rect x="250" y="168" width="170" height="94" rx="18" fill="#A7F3D0"/>
+    <text x="280" y="205" fill="#064E3B" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">Features</text>
+    <text x="278" y="235" fill="#065F46" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">length, cluster, entropy</text>
+
+    <rect x="460" y="168" width="170" height="94" rx="18" fill="#FDE68A"/>
+    <text x="496" y="205" fill="#713F12" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">Guards</text>
+    <text x="490" y="235" fill="#854D0E" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">w dot phi >= b</text>
+
+    <rect x="670" y="168" width="170" height="94" rx="18" fill="#C4B5FD"/>
+    <text x="710" y="205" fill="#3B0764" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">LinUCB</text>
+    <text x="694" y="235" fill="#581C87" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">select active edge</text>
+
+    <rect x="880" y="168" width="170" height="94" rx="18" fill="#FDA4AF"/>
+    <text x="908" y="205" fill="#7F1D1D" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">Assembler</text>
+    <text x="916" y="235" fill="#881337" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">render path</text>
+
+    <rect x="540" y="344" width="170" height="94" rx="18" fill="#67E8F9"/>
+    <text x="584" y="381" fill="#164E63" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">LM Call</text>
+    <text x="576" y="411" fill="#155E75" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">response y</text>
+
+    <rect x="760" y="344" width="170" height="94" rx="18" fill="#FDBA74"/>
+    <text x="803" y="381" fill="#7C2D12" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">Reward</text>
+    <text x="792" y="411" fill="#7C2D12" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">task, cost, variance</text>
+
+    <rect x="980" y="344" width="160" height="94" rx="18" fill="#86EFAC"/>
+    <text x="1014" y="381" fill="#14532D" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">Update</text>
+    <text x="1010" y="411" fill="#166534" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">policy + guards</text>
+  </g>
+
+  <path d="M210 215 H236" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M420 215 H446" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M630 215 H656" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M840 215 H866" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M965 262 C965 322 682 302 642 337" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M710 391 H746" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M930 391 H966" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M1061 344 C1052 284 828 303 776 265" stroke="#475569" stroke-width="4" stroke-linecap="round" stroke-dasharray="9 9" marker-end="url(#arrow)"/>
+
+  <g>
+    <circle cx="1060" cy="86" r="12" fill="#38BDF8"/>
+    <circle cx="1092" cy="86" r="12" fill="#FACC15"/>
+    <circle cx="1124" cy="86" r="12" fill="#F472B6"/>
+    <text x="938" y="93" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">PPG-fast: 1 LM call</text>
+  </g>
+</svg>

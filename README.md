@@ -5,6 +5,8 @@
 ![Status](https://img.shields.io/badge/status-research%20prototype-orange)
 ![License](https://img.shields.io/badge/license-TBD-lightgrey)
 
+![Colorful Prompt Policy Graphs overview](docs/assets/ppg-hero.svg)
+
 Prompt Policy Graphs, or PPG, is a research prototype for learning adaptive prompt
 programs instead of optimizing one flat prompt string. A PPG represents a prompt as a
 typed directed acyclic graph of reusable fragments, executes it with guard-gated runtime
@@ -66,6 +68,8 @@ That turns prompt optimization into a structured policy-learning problem.
 
 ## Method Overview
 
+![Colorful PPG method stack](docs/assets/ppg-method-stack.svg)
+
 PPG defines a prompt as a graph:
 
 ```text
@@ -95,7 +99,10 @@ and less brittle under input perturbations.
 
 ## Architecture
 
-GitHub renders the diagrams below as images through Mermaid.
+The colored SVG below is the high-level runtime picture. The Mermaid diagrams that
+follow keep the architecture editable directly in Markdown.
+
+![Colorful PPG architecture pipeline](docs/assets/ppg-architecture.svg)
 
 ### System Flow
 
@@ -254,6 +261,8 @@ lm = DiskCachedLMClient(base_lm, cache_path=".cache/lm_cache.json")
 ```
 
 ## Training
+
+![Colorful PPG training loop](docs/assets/ppg-training-loop.svg)
 
 PPG training uses `PPGTrainer`, which runs three phases:
 
@@ -423,6 +432,8 @@ Supported ablations:
 | `lean_topology` | Rich graph, replaced by 3-node lean graph |
 
 ## Benchmark Support
+
+![Colorful PPG benchmark coverage map](docs/assets/ppg-benchmark-map.svg)
 
 Benchmark loaders live in `ppg/eval/benchmarks/loaders.py`. They convert Hugging Face
 datasets into `EvalExample` objects and expose recommended metrics.

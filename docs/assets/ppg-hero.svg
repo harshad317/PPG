@@ -1,0 +1,74 @@
+<svg width="1200" height="420" viewBox="0 0 1200 420" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Prompt Policy Graphs hero image</title>
+  <desc id="desc">A colorful overview showing typed prompt graph, FSM runtime, and bandit reward combining into Prompt Policy Graphs.</desc>
+  <defs>
+    <linearGradient id="heroBg" x1="0" y1="0" x2="1200" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#15143A"/>
+      <stop offset="0.35" stop-color="#0B4B70"/>
+      <stop offset="0.68" stop-color="#3A1C71"/>
+      <stop offset="1" stop-color="#FF7A3D"/>
+    </linearGradient>
+    <linearGradient id="cardA" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2DD4BF"/>
+      <stop offset="1" stop-color="#3B82F6"/>
+    </linearGradient>
+    <linearGradient id="cardB" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FDE047"/>
+      <stop offset="1" stop-color="#F97316"/>
+    </linearGradient>
+    <linearGradient id="cardC" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#A78BFA"/>
+      <stop offset="1" stop-color="#EC4899"/>
+    </linearGradient>
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#020617" flood-opacity="0.28"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#E0F2FE"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="420" rx="34" fill="url(#heroBg)"/>
+  <circle cx="1020" cy="66" r="122" fill="#67E8F9" fill-opacity="0.14"/>
+  <circle cx="107" cy="335" r="132" fill="#FDE047" fill-opacity="0.16"/>
+  <circle cx="790" cy="360" r="74" fill="#FB7185" fill-opacity="0.18"/>
+
+  <g opacity="0.45">
+    <path d="M74 82 C220 26 342 68 482 41 C627 13 736 46 874 25 C982 9 1062 24 1137 64" stroke="#FFFFFF" stroke-opacity="0.34" stroke-width="2"/>
+    <path d="M42 372 C187 318 344 364 505 326 C676 286 771 349 928 307 C1034 278 1109 302 1172 349" stroke="#FFFFFF" stroke-opacity="0.27" stroke-width="2"/>
+  </g>
+
+  <text x="72" y="92" fill="#F8FAFC" font-family="Inter, Arial, sans-serif" font-size="58" font-weight="800" letter-spacing="0">
+    Prompt Policy Graphs
+  </text>
+  <text x="76" y="137" fill="#DFFAFE" font-family="Inter, Arial, sans-serif" font-size="23" font-weight="600">
+    Adaptive prompt programs with typed fragments, guarded execution, and bandit-trained routing
+  </text>
+
+  <g filter="url(#softShadow)">
+    <rect x="78" y="190" width="260" height="118" rx="18" fill="url(#cardA)"/>
+    <text x="108" y="233" fill="#082F49" font-family="Inter, Arial, sans-serif" font-size="25" font-weight="800">Typed Graph</text>
+    <text x="108" y="267" fill="#083344" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="600">Prompt fragments become</text>
+    <text x="108" y="291" fill="#083344" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="600">structured graph nodes</text>
+
+    <rect x="470" y="190" width="260" height="118" rx="18" fill="url(#cardB)"/>
+    <text x="500" y="233" fill="#431407" font-family="Inter, Arial, sans-serif" font-size="25" font-weight="800">FSM Runtime</text>
+    <text x="500" y="267" fill="#431407" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="600">Guards select the path</text>
+    <text x="500" y="291" fill="#431407" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="600">for each input state</text>
+
+    <rect x="862" y="190" width="260" height="118" rx="18" fill="url(#cardC)"/>
+    <text x="892" y="233" fill="#FDF2F8" font-family="Inter, Arial, sans-serif" font-size="25" font-weight="800">Bandit Reward</text>
+    <text x="892" y="267" fill="#FCE7F3" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="600">Optimize accuracy, cost,</text>
+    <text x="892" y="291" fill="#FCE7F3" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="600">constraints, robustness</text>
+  </g>
+
+  <path d="M348 249 H456" stroke="#E0F2FE" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M740 249 H848" stroke="#E0F2FE" stroke-width="5" stroke-linecap="round" marker-end="url(#arrow)"/>
+
+  <g transform="translate(414 333)">
+    <rect x="0" y="0" width="372" height="48" rx="24" fill="#F8FAFC" fill-opacity="0.92"/>
+    <text x="34" y="31" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="800">
+      From flat strings to learned prompt policies
+    </text>
+  </g>
+</svg>
