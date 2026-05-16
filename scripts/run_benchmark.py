@@ -522,7 +522,9 @@ def main():
 
     # -- PPG --
     _eval_step("Evaluating PPG...")
-    all_metrics["ppg"] = harness.evaluate_splits("ppg", _splits, lm_counter=lm)["test"]
+    all_metrics["ppg"] = harness.evaluate_splits(
+        "ppg", _splits, lm_counter=lm, opt_calls=train_api_calls
+    )["test"]
 
     # -- MIPROv2: compile then eval --
     if args.run_mipro:
@@ -535,9 +537,13 @@ def main():
             from ppg.eval.external import MIPROv2Baseline
             seed_prompt = build_seed_prompt(graph)
             mipro = MIPROv2Baseline(metric=metric, auto="heavy")
+            lm.reset()
             mipro.compile(trainset=train_ex, valset=val_ex, seed_instructions=seed_prompt)
+            mipro_opt_calls = lm.reset()
             harness.register_external("miprov2", mipro)
-            all_metrics["miprov2"] = harness.evaluate_splits("miprov2", _splits, lm_counter=lm)["test"]
+            all_metrics["miprov2"] = harness.evaluate_splits(
+                "miprov2", _splits, lm_counter=lm, opt_calls=mipro_opt_calls
+            )["test"]
         except ImportError as e:
             _info(f"SKIP — {e}")
 
@@ -555,21 +561,27 @@ def main():
                 n_eval_examples=20,
                 seed=args.seed,
             )
+            lm.reset()
             gepa.compile(
                 trainset=train_ex,
                 valset=val_ex,
                 seed_prompt=seed_prompt,
                 objective=objective,
             )
+            gepa_opt_calls = lm.reset()
             harness.register_external("gepa", gepa)
-            all_metrics["gepa"] = harness.evaluate_splits("gepa", _splits, lm_counter=lm)["test"]
+            all_metrics["gepa"] = harness.evaluate_splits(
+                "gepa", _splits, lm_counter=lm, opt_calls=gepa_opt_calls
+            )["test"]
         except ImportError as e:
             _info(f"SKIP — {e}")
 
-    # -- Internal baselines: one at a time --
+    # -- Internal baselines: one at a time (no optimization phase) --
     for name in internal_baselines:
         _eval_step(f"Evaluating {name}...")
-        all_metrics[name] = harness.evaluate_splits(name, _splits, lm_counter=lm)["test"]
+        all_metrics[name] = harness.evaluate_splits(
+            name, _splits, lm_counter=lm, opt_calls=0
+        )["test"]
 
     # Assemble final report from accumulated per-method results
     ppg_m = all_metrics.pop("ppg")
