@@ -101,6 +101,14 @@ def _make_dspy_stub(*, include_gepa: bool = False):
         dspy_mod.teleprompt = teleprompt_mod
         patches["dspy.teleprompt"] = teleprompt_mod
 
+        # Stub gepa.gepa submodule so ScoreWithFeedback import doesn't fail.
+        # Tests run without real DSPy, so _SWF will be None → metric returns tuple.
+        gepa_pkg  = types.ModuleType("dspy.teleprompt.gepa")
+        gepa_mod  = types.ModuleType("dspy.teleprompt.gepa.gepa")
+        teleprompt_mod.gepa = gepa_pkg
+        patches["dspy.teleprompt.gepa"]      = gepa_pkg
+        patches["dspy.teleprompt.gepa.gepa"] = gepa_mod  # no ScoreWithFeedback → _SWF=None
+
     return dspy_mod, patches
 
 
@@ -266,9 +274,11 @@ class TestGEPABaseline:
             response = "42"
 
         ex = patches["dspy"].Example(input="q", y_star="42")
-        result = fn(ex, FakePred())
-        assert isinstance(result, tuple) and len(result) == 2
-        score, feedback = result
+        # Call with full DSPy 3.x signature (gold, pred, trace, pred_name, pred_trace)
+        result = fn(ex, FakePred(), None, None, None)
+        # Returns ScoreWithFeedback (mocked as tuple fallback since gepa.gepa stub absent)
+        score    = result.score    if hasattr(result, "score")    else result[0]
+        feedback = result.feedback if hasattr(result, "feedback") else result[1]
         assert isinstance(score, float)
         assert isinstance(feedback, str)
         assert "Expected" in feedback

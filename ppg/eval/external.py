@@ -286,6 +286,12 @@ class GEPABaseline:
                 "DSPy required for GEPABaseline: pip install dspy-ai"
             ) from None
 
+        # DSPy 3.x uses ScoreWithFeedback; fall back to (score, feedback) tuple for 2.x
+        try:
+            from dspy.teleprompt.gepa.gepa import ScoreWithFeedback as _SWF
+        except ImportError:
+            _SWF = None
+
         metric       = self._metric
         instructions = seed_instructions
 
@@ -298,19 +304,21 @@ class GEPABaseline:
             for ex in valset
         ] if valset else None
 
-        def gepa_metric(example, prediction, trace=None):
-            """Return (score, feedback) — the feedback string drives GEPA reflection."""
+        def gepa_metric(gold, pred, trace=None, pred_name=None, pred_trace=None):
+            """GEPAFeedbackMetric: return ScoreWithFeedback (DSPy 3.x) or (score, str) (2.x)."""
             try:
-                response = getattr(prediction, "response", str(prediction))
-                score    = float(metric.score(response, example.y_star))
+                response = getattr(pred, "response", str(pred))
+                score    = float(metric.score(response, gold.y_star))
             except Exception:
                 response = ""
                 score    = 0.0
             feedback = (
-                f"Expected: {str(example.y_star)[:300]!r}\n"
+                f"Expected: {str(gold.y_star)[:300]!r}\n"
                 f"Got:      {str(response)[:300]!r}\n"
                 f"Score:    {score:.3f}"
             )
+            if _SWF is not None:
+                return _SWF(score=score, feedback=feedback)
             return score, feedback
 
         class _PPGModule(dspy.Module):
