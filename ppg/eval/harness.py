@@ -227,10 +227,10 @@ class _FlatAllRunner:
         return order
 
     def run(self, example: EvalExample) -> tuple[str, int]:
+        from ppg.core.tokenizer import count_tokens
         prompt   = self._asm.assemble(self._all_ids, {"input": example.x})
         response = self._lm.complete(prompt)
-        tokens   = len(prompt.split())
-        return response, tokens
+        return response, count_tokens(prompt)
 
 
 class _StaticBestRunner:
@@ -242,10 +242,10 @@ class _StaticBestRunner:
         self._asm    = PromptAssembler(graph)
 
     def run(self, example: EvalExample) -> tuple[str, int]:
+        from ppg.core.tokenizer import count_tokens
         prompt   = self._asm.assemble(self._path, {"input": example.x})
         response = self._lm.complete(prompt)
-        tokens   = len(prompt.split())
-        return response, tokens
+        return response, count_tokens(prompt)
 
 
 class _ExecutorRunner:
@@ -407,13 +407,13 @@ class EvalHarness:
         if test_list and hasattr(self._metric, "score_with_tests"):
             return self._metric.score_with_tests(prediction, test_list)
         if example.constraints and self._checker is not None:
-            return self._checker.check(prediction, example.constraints)
+            return self._checker.check(prediction, example.constraints, example.metadata or {})
         return self._metric.score(prediction, example.y_star)
 
     def _constraint_score(self, prediction: str, example: EvalExample) -> Optional[float]:
         """Returns constraint satisfaction score when checker + constraints present, else None."""
         if example.constraints and self._checker is not None:
-            return self._checker.check(prediction, example.constraints)
+            return self._checker.check(prediction, example.constraints, example.metadata or {})
         return None
 
     # ------------------------------------------------------------------

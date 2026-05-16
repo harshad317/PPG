@@ -392,5 +392,5 @@ class PPGExecutor:
     # ------------------------------------------------------------------
 
     def _count_tokens(self, text: str) -> int:
-        """Whitespace-split proxy. Replaced by tiktoken when available."""
-        return len(text.split())
+        from ppg.core.tokenizer import count_tokens
+        return count_tokens(text)

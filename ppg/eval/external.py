@@ -147,8 +147,9 @@ class MIPROv2Baseline:
             raise RuntimeError("Call compile() before run()")
         pred     = self._program(input=example.x)
         response = getattr(pred, "response", str(pred))
+        from ppg.core.tokenizer import count_tokens
         proxy    = f"{self._prompt_prefix}\n\nInput: {example.x}" if self._prompt_prefix else f"Input: {example.x}"
-        return response, len(proxy.split())
+        return response, count_tokens(proxy)
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +302,7 @@ class GEPABaseline:
         """Return (response, token_count) for one example."""
         if self._optimized_prompt is None:
             raise RuntimeError("Call compile() before run()")
+        from ppg.core.tokenizer import count_tokens
         prompt   = f"{self._optimized_prompt}\n\nInput: {example.x}"
         response = self._lm.complete(prompt)
-        return response, len(prompt.split())
+        return response, count_tokens(prompt)

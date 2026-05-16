@@ -286,7 +286,8 @@ class FeatureExtractor:
         if self.tokenizer is not None:
             tokens = self.tokenizer(text)
         else:
-            tokens = len(text.split())     # whitespace proxy
+            from ppg.core.tokenizer import count_tokens
+            tokens = count_tokens(text)
         return float(np.clip(tokens / self.max_input_tokens, 0.0, 1.0))
 
     def _cluster(self, text: str) -> int:

@@ -167,6 +167,10 @@ class IFEvalLoader:
                 x=row["prompt"],
                 y_star="",
                 constraints=self._extract_constraints(row),
+                metadata={
+                    "instruction_id_list": row.get("instruction_id_list") or [],
+                    "kwargs": row.get("kwargs") or [],
+                },
             )
             for row in rows
         ]
@@ -191,8 +195,8 @@ class IFEvalLoader:
 
     @staticmethod
     def recommended_constraint_checker():
-        from ppg.training.reward import KeywordConstraintChecker
-        return KeywordConstraintChecker()
+        from ppg.training.reward import IFEvalOfficialChecker
+        return IFEvalOfficialChecker()
 
 
 # ---------------------------------------------------------------------------
@@ -481,13 +485,28 @@ class IFBenchLoader:
             EvalExample(
                 x=row["instruction"],
                 y_star=row["chosen"]["content"],
-                constraints=(
-                    [c["constraint"] for c in row.get("llm_constraints_used", []) or [] if isinstance(c, dict) and "constraint" in c]
-                    + [c["constraint"] for c in row.get("code_constraints_used", []) or [] if isinstance(c, dict) and "constraint" in c]
-                ),
+                constraints=self._extract_constraints(row),
+                metadata={
+                    "constraint_objects": self._extract_constraint_objects(row),
+                },
             )
             for row in rows
         ]
+
+    @staticmethod
+    def _extract_constraints(row: dict) -> list[str]:
+        all_constraints = (
+            [c for c in row.get("llm_constraints_used", []) or [] if isinstance(c, dict) and "constraint" in c]
+            + [c for c in row.get("code_constraints_used", []) or [] if isinstance(c, dict) and "constraint" in c]
+        )
+        return [c["constraint"] for c in all_constraints]
+
+    @staticmethod
+    def _extract_constraint_objects(row: dict) -> list[dict]:
+        return (
+            [c for c in row.get("llm_constraints_used", []) or [] if isinstance(c, dict) and "constraint" in c]
+            + [c for c in row.get("code_constraints_used", []) or [] if isinstance(c, dict) and "constraint" in c]
+        )
 
     @staticmethod
     def recommended_metric():
@@ -496,8 +515,8 @@ class IFBenchLoader:
 
     @staticmethod
     def recommended_constraint_checker():
-        from ppg.training.reward import KeywordConstraintChecker
-        return KeywordConstraintChecker()
+        from ppg.training.reward import IFBenchConstraintChecker
+        return IFBenchConstraintChecker()
 
 
 # ---------------------------------------------------------------------------

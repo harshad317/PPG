@@ -111,7 +111,7 @@ METRIC_REGISTRY: dict[str, TaskMetric] = {
 
 @runtime_checkable
 class ConstraintChecker(Protocol):
-    def check(self, response: str, constraints: list[str]) -> float: ...
+    def check(self, response: str, constraints: list[str], metadata: dict | None = None) -> float: ...
 
 
 class KeywordConstraintChecker:
@@ -128,7 +128,7 @@ class KeywordConstraintChecker:
     F1Metric() for r_task; use this class for r_constraint via constraint_checker=.
     """
 
-    def check(self, response: str, constraints: list[str]) -> float:
+    def check(self, response: str, constraints: list[str], metadata: dict | None = None) -> float:
         if not constraints:
             return 1.0
         resp_lower = response.lower()
@@ -141,6 +141,175 @@ class KeywordConstraintChecker:
             "Pass it as constraint_checker= to AblationStudy or RewardComputer. "
             "Use ExactMatchMetric() or F1Metric() for the metric= argument."
         )
+
+
+class IFEvalOfficialChecker:
+    """
+    Constraint checker for IFEval using the official Google verifier suite.
+
+    When the EvalExample metadata contains 'instruction_id_list' and 'kwargs'
+    (stored by IFEvalLoader), uses the official instruction_following_eval
+    library for format/length/regex/JSON/keyword checks.
+
+    Falls back to KeywordConstraintChecker when the library is not installed
+    or metadata is absent.
+
+    Install: pip install instruction-following-eval
+    Source : https://github.com/google-research/google-research/tree/master/instruction_following_eval
+    """
+
+    def check(self, response: str, constraints: list[str], metadata: dict | None = None) -> float:
+        if metadata and metadata.get("instruction_id_list"):
+            result = self._official_check(response, metadata)
+            if result is not None:
+                return result
+        return KeywordConstraintChecker().check(response, constraints)
+
+    def _official_check(self, response: str, metadata: dict) -> float | None:
+        try:
+            from instruction_following_eval import instructions_registry  # type: ignore[import]
+        except ImportError:
+            return None
+
+        instruction_id_list = metadata["instruction_id_list"]
+        kwargs_list = metadata.get("kwargs") or [{}] * len(instruction_id_list)
+
+        satisfied = 0
+        total = 0
+        for instr_id, kwargs in zip(instruction_id_list, kwargs_list):
+            if instr_id not in instructions_registry.INSTRUCTION_DICT:
+                continue
+            try:
+                instr = instructions_registry.INSTRUCTION_DICT[instr_id](instr_id)
+                instr.build_description(**(kwargs or {}))
+                if instr.check_following(response):
+                    satisfied += 1
+                total += 1
+            except Exception:
+                pass
+        return satisfied / total if total > 0 else 1.0
+
+
+class IFBenchConstraintChecker:
+    """
+    Constraint checker for IFBench with type-dispatched rule-based verification.
+
+    When EvalExample metadata contains 'constraint_objects' (stored by
+    IFBenchLoader), dispatches each constraint to a type-specific checker:
+      - Length   : word/sentence count parsing and comparison
+      - Format   : regex patterns for bullets, headers, JSON, numbered lists
+      - Keywords : exact case-insensitive keyword matching
+      - Style    : heuristic checks; fallback to keyword matching
+      - (other)  : keyword substring match on constraint text
+
+    Falls back to KeywordConstraintChecker when metadata is absent.
+    """
+
+    _BULLET_RE   = re.compile(r"^\s*[-*•]\s", re.MULTILINE)
+    _NUMBERED_RE = re.compile(r"^\s*\d+[.)]\s", re.MULTILINE)
+    _HEADER_RE   = re.compile(r"^#{1,6}\s", re.MULTILINE)
+    _JSON_RE     = re.compile(r"^\s*[\[{]", re.DOTALL)
+
+    def check(self, response: str, constraints: list[str], metadata: dict | None = None) -> float:
+        objs = (metadata or {}).get("constraint_objects")
+        if objs:
+            return self._typed_check(response, objs)
+        return KeywordConstraintChecker().check(response, constraints)
+
+    def _typed_check(self, response: str, objs: list[dict]) -> float:
+        if not objs:
+            return 1.0
+        satisfied = sum(self._check_one(response, o) for o in objs)
+        return satisfied / len(objs)
+
+    def _check_one(self, response: str, obj: dict) -> bool:
+        ctype = (obj.get("constraint_type") or "").lower()
+        ctext = (obj.get("constraint") or "").lower()
+
+        if ctype == "length":
+            return self._check_length(response, ctext)
+        if ctype == "format":
+            return self._check_format(response, ctext)
+        if ctype == "keywords":
+            return self._check_keywords(response, ctext)
+        # Style and unknown: check if key content words from constraint appear in response
+        return self._check_content_words(response, ctext)
+
+    def _check_length(self, response: str, ctext: str) -> bool:
+        import re as _re
+        words = len(response.split())
+        # parse "fewer than N words", "at least N words", "exactly N words", etc.
+        m = _re.search(r"(fewer than|less than|under|at most)\s+(\d+)\s+word", ctext)
+        if m:
+            return words < int(m.group(2))
+        m = _re.search(r"(more than|at least|over)\s+(\d+)\s+word", ctext)
+        if m:
+            return words > int(m.group(2))
+        m = _re.search(r"(exactly|around|about)\s+(\d+)\s+word", ctext)
+        if m:
+            n = int(m.group(2))
+            return abs(words - n) <= max(3, int(n * 0.1))
+        m = _re.search(r"(\d+)\s*(to|-)\s*(\d+)\s+word", ctext)
+        if m:
+            return int(m.group(1)) <= words <= int(m.group(3))
+        # Sentence count fallback
+        sentences = len(_re.split(r"[.!?]+", response.strip()))
+        m = _re.search(r"(\d+)\s+sentence", ctext)
+        if m:
+            return abs(sentences - int(m.group(1))) <= 1
+        return ctext in response.lower()
+
+    def _check_format(self, response: str, ctext: str) -> bool:
+        if "bullet" in ctext or "bulleted" in ctext:
+            return bool(self._BULLET_RE.search(response))
+        if "numbered list" in ctext or "ordered list" in ctext:
+            return bool(self._NUMBERED_RE.search(response))
+        if "header" in ctext or "heading" in ctext:
+            return bool(self._HEADER_RE.search(response))
+        if "json" in ctext:
+            return bool(self._JSON_RE.match(response.strip()))
+        if "paragraph" in ctext:
+            return len([p for p in response.split("\n\n") if p.strip()]) >= 2
+        return ctext in response.lower()
+
+    def _check_keywords(self, response: str, ctext: str) -> bool:
+        resp_lower = response.lower()
+        # "include the word X" / "must contain X"
+        import re as _re
+        m = _re.search(r'(?:include|contain|use|mention)\s+(?:the\s+)?(?:word\s+)?["\']?(\w+)["\']?', ctext)
+        if m:
+            return m.group(1).lower() in resp_lower
+        # "do not use X" / "avoid X"
+        m = _re.search(r'(?:do not|avoid|without|no)\s+(?:use\s+)?(?:the\s+)?(?:word\s+)?["\']?(\w+)["\']?', ctext)
+        if m:
+            return m.group(1).lower() not in resp_lower
+        return ctext in resp_lower
+
+    def _check_content_words(self, response: str, ctext: str) -> bool:
+        """Check if key content words from a constraint appear in the response.
+
+        Extracts words longer than 4 chars, skips common stop words, then checks
+        whether at least one content word (via 5-char prefix) appears in the response.
+        Covers style/tone constraints like 'tone of excitement and enthusiasm'.
+        """
+        _STOP = frozenset({
+            "about", "after", "along", "also", "although", "another", "because",
+            "before", "being", "between", "both", "could", "does", "during",
+            "each", "either", "ensure", "every", "follow", "format", "from",
+            "give", "have", "into", "just", "keep", "make", "more", "must",
+            "need", "only", "other", "over", "part", "please", "provide",
+            "response", "should", "since", "some", "such", "than", "that",
+            "their", "them", "then", "there", "these", "they", "this", "those",
+            "through", "under", "using", "very", "well", "when", "where",
+            "which", "while", "will", "with", "within", "without", "write",
+            "your",
+        })
+        words = [w for w in re.findall(r"\w+", ctext.lower())
+                 if len(w) > 4 and w not in _STOP]
+        if not words:
+            return ctext in response.lower()
+        resp_lower = response.lower()
+        return any(w[:5] in resp_lower for w in words)
 
 
 # ---------------------------------------------------------------------------
