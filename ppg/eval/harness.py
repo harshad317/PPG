@@ -37,11 +37,27 @@ Usage
 from __future__ import annotations
 
 import statistics
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 
+from ppg.core.executor import (
+    HighestUtilitySelector,
+    LMClient,
+    PathTrace,
+    PPGExecutor,
+    PromptAssembler,
+    RandomSelector,
+)
+from ppg.core.graph import PPGraph
+from ppg.training.reward import ConstraintChecker, TaskMetric
+
+
+# ---------------------------------------------------------------------------
+# Progress bar helpers
+# ---------------------------------------------------------------------------
 
 def _make_eval_bar(iterable, *, desc: str, enabled: bool, total: int):
     """Wrap eval loop with tqdm if enabled."""
@@ -54,16 +70,15 @@ def _make_eval_bar(iterable, *, desc: str, enabled: bool, total: int):
     return tqdm(iterable, desc=desc, total=total, disable=not enabled,
                 unit="ex", ncols=100, leave=True)
 
-from ppg.core.executor import (
-    HighestUtilitySelector,
-    LMClient,
-    PathTrace,
-    PPGExecutor,
-    PromptAssembler,
-    RandomSelector,
-)
-from ppg.core.graph import PPGraph
-from ppg.training.reward import ConstraintChecker, TaskMetric
+
+def _make_manual_bar(*, desc: str, enabled: bool, total: int):
+    if not enabled:
+        return None
+    try:
+        from tqdm import tqdm
+        return tqdm(total=total, desc=desc, unit="ex", ncols=100, leave=True)
+    except ImportError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +185,9 @@ class EvalConfig:
 
     # Progress display
     show_progress: bool = True
+
+    # Parallel eval workers — LM calls are I/O-bound so threads scale well.
+    n_workers: int = 1
 
     def __post_init__(self):
         unknown = set(self.baselines) - SUPPORTED_BASELINES
@@ -309,7 +327,73 @@ class EvalHarness:
         return EvalReport(ppg=ppg_metrics, baselines=base_metrics)
 
     # ------------------------------------------------------------------
-    # PPG evaluation
+    # Parallel execution core
+    # ------------------------------------------------------------------
+
+    def _run_examples(
+        self,
+        examples: list[EvalExample],
+        call_fn:  Callable[[EvalExample], tuple[str, int]],
+        desc:     str,
+    ) -> tuple[list[float], list[int], list[float]]:
+        """
+        Evaluate call_fn over examples, sequential or parallel based on n_workers.
+
+        call_fn(example) -> (response, token_count)
+
+        Returns (task_scores, token_counts, constraint_scores).
+        Results are in the same order as examples.
+        """
+        n = len(examples)
+        n_workers = self._cfg.n_workers
+
+        if n_workers <= 1:
+            return self._run_sequential(examples, call_fn, desc)
+
+        # Parallel: submit all examples, collect in order
+        bar = _make_manual_bar(desc=desc, enabled=self._cfg.show_progress, total=n)
+        scores, tokens, cscores = [], [], []
+
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futures = [pool.submit(call_fn, ex) for ex in examples]
+            for ex, fut in zip(examples, futures):
+                response, t = fut.result()
+                scores.append(self._score_example(response, ex))
+                tokens.append(t)
+                c = self._constraint_score(response, ex)
+                if c is not None:
+                    cscores.append(c)
+                if bar is not None:
+                    bar.update(1)
+                    bar.set_postfix(acc=f"{sum(scores)/len(scores):.3f}")
+
+        if bar is not None:
+            bar.close()
+
+        return scores, tokens, cscores
+
+    def _run_sequential(
+        self,
+        examples: list[EvalExample],
+        call_fn:  Callable[[EvalExample], tuple[str, int]],
+        desc:     str,
+    ) -> tuple[list[float], list[int], list[float]]:
+        bar = _make_eval_bar(examples, desc=desc,
+                             enabled=self._cfg.show_progress, total=len(examples))
+        scores, tokens, cscores = [], [], []
+        for ex in bar:
+            response, t = call_fn(ex)
+            scores.append(self._score_example(response, ex))
+            tokens.append(t)
+            c = self._constraint_score(response, ex)
+            if c is not None:
+                cscores.append(c)
+            if self._cfg.show_progress and hasattr(bar, "set_postfix"):
+                bar.set_postfix(acc=f"{sum(scores)/len(scores):.3f}")
+        return scores, tokens, cscores
+
+    # ------------------------------------------------------------------
+    # Scoring helpers
     # ------------------------------------------------------------------
 
     def _score_example(self, prediction: str, example: EvalExample) -> float:
@@ -332,19 +416,20 @@ class EvalHarness:
             return self._checker.check(prediction, example.constraints)
         return None
 
+    # ------------------------------------------------------------------
+    # PPG evaluation
+    # ------------------------------------------------------------------
+
     def _run_ppg(self, examples: list[EvalExample]) -> BaselineMetrics:
-        scores, tokens, cscores = [], [], []
-        bar = _make_eval_bar(examples, desc="eval ppg      ",
-                             enabled=self._cfg.show_progress, total=len(examples))
-        for ex in bar:
-            trace = self._executor.execute(ex.x, train_mode=False)
-            scores.append(self._score_example(trace.lm_response, ex))
-            tokens.append(trace.token_count)
-            c = self._constraint_score(trace.lm_response, ex)
-            if c is not None:
-                cscores.append(c)
-            if self._cfg.show_progress and hasattr(bar, "set_postfix"):
-                bar.set_postfix(acc=f"{sum(scores)/len(scores):.3f}")
+        executor = self._executor
+
+        def _call(ex: EvalExample) -> tuple[str, int]:
+            trace = executor.execute(ex.x, train_mode=False)
+            return trace.lm_response, trace.token_count
+
+        scores, tokens, cscores = self._run_examples(
+            examples, _call, desc="eval ppg      "
+        )
         return BaselineMetrics(
             name="ppg",
             task_scores=scores,
@@ -398,18 +483,10 @@ class EvalHarness:
 
     def _run_flat_all(self, examples: list[EvalExample]) -> BaselineMetrics:
         runner = _FlatAllRunner(self._executor.graph, self._lm)
-        scores, tokens, cscores = [], [], []
-        bar = _make_eval_bar(examples, desc="eval flat_all ",
-                             enabled=self._cfg.show_progress, total=len(examples))
-        for ex in bar:
-            response, t = runner.run(ex)
-            scores.append(self._score_example(response, ex))
-            tokens.append(t)
-            c = self._constraint_score(response, ex)
-            if c is not None:
-                cscores.append(c)
-            if self._cfg.show_progress and hasattr(bar, "set_postfix"):
-                bar.set_postfix(acc=f"{sum(scores)/len(scores):.3f}")
+
+        scores, tokens, cscores = self._run_examples(
+            examples, runner.run, desc="eval flat_all "
+        )
         return BaselineMetrics(
             name="flat_all",
             task_scores=scores,
@@ -423,18 +500,10 @@ class EvalHarness:
         if path is None:
             path = self._best_utility_path()
         runner = _StaticBestRunner(self._executor.graph, self._lm, path)
-        scores, tokens, cscores = [], [], []
-        bar = _make_eval_bar(examples, desc="eval static   ",
-                             enabled=self._cfg.show_progress, total=len(examples))
-        for ex in bar:
-            response, t = runner.run(ex)
-            scores.append(self._score_example(response, ex))
-            tokens.append(t)
-            c = self._constraint_score(response, ex)
-            if c is not None:
-                cscores.append(c)
-            if self._cfg.show_progress and hasattr(bar, "set_postfix"):
-                bar.set_postfix(acc=f"{sum(scores)/len(scores):.3f}")
+
+        scores, tokens, cscores = self._run_examples(
+            examples, runner.run, desc="eval static   "
+        )
         return BaselineMetrics(
             name="static_best",
             task_scores=scores,
@@ -449,20 +518,21 @@ class EvalHarness:
         selector,
         examples: list[EvalExample],
     ) -> BaselineMetrics:
-        runner = _ExecutorRunner(self._executor, selector)
-        scores, tokens, cscores = [], [], []
-        desc  = f"eval {name[:10]:<10}"
-        bar   = _make_eval_bar(examples, desc=desc,
-                               enabled=self._cfg.show_progress, total=len(examples))
-        for ex in bar:
-            response, t = runner.run(ex)
-            scores.append(self._score_example(response, ex))
-            tokens.append(t)
-            c = self._constraint_score(response, ex)
-            if c is not None:
-                cscores.append(c)
-            if self._cfg.show_progress and hasattr(bar, "set_postfix"):
-                bar.set_postfix(acc=f"{sum(scores)/len(scores):.3f}")
+        executor = self._executor
+        original = executor.selector
+        executor.selector = selector  # set once before threads start
+
+        def _call(ex: EvalExample) -> tuple[str, int]:
+            trace = executor.execute(ex.x, train_mode=False)
+            return trace.lm_response, trace.token_count
+
+        try:
+            scores, tokens, cscores = self._run_examples(
+                examples, _call, desc=f"eval {name[:10]:<10}"
+            )
+        finally:
+            executor.selector = original  # always restore
+
         return BaselineMetrics(
             name=name,
             task_scores=scores,
@@ -478,19 +548,9 @@ class EvalHarness:
         examples: list[EvalExample],
     ) -> BaselineMetrics:
         """Run a pre-compiled external baseline (MIPROv2Baseline, GEPABaseline, etc.)."""
-        scores, tokens, cscores = [], [], []
-        desc = f"eval {name[:10]:<10}"
-        bar  = _make_eval_bar(examples, desc=desc,
-                              enabled=self._cfg.show_progress, total=len(examples))
-        for ex in bar:
-            response, t = baseline.run(ex)
-            scores.append(self._score_example(response, ex))
-            tokens.append(t)
-            c = self._constraint_score(response, ex)
-            if c is not None:
-                cscores.append(c)
-            if self._cfg.show_progress and hasattr(bar, "set_postfix"):
-                bar.set_postfix(acc=f"{sum(scores)/len(scores):.3f}")
+        scores, tokens, cscores = self._run_examples(
+            examples, baseline.run, desc=f"eval {name[:10]:<10}"
+        )
         return BaselineMetrics(
             name=name,
             task_scores=scores,

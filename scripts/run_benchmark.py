@@ -525,7 +525,8 @@ def main():
         executor=executor,
         metric=metric,
         lm=lm,
-        config=EvalConfig(baselines=baselines, show_progress=show_progress),
+        config=EvalConfig(baselines=baselines, show_progress=show_progress,
+                          n_workers=args.workers),
         constraint_checker=constraint_checker,
         external_baselines=external_baselines if external_baselines else None,
     )
