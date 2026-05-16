@@ -382,13 +382,8 @@ class PPGTrainer:
     ) -> EpisodeResult:
         """Policy update + credit assignment + stats. Must run sequentially."""
         phi = trace.pre_lm_features.as_vector()
-        if self._train_policy:
-            self.policy.update_path(
-                trace.edges_traversed,
-                phi,
-                reward_components.total,
-            )
 
+        # Run credit first so its marginal can sharpen per-edge reward signals.
         credit_result = self.credit.maybe_assign(
             trace=trace,
             graph=self.executor.graph,
@@ -396,6 +391,26 @@ class PPGTrainer:
             y_star=example.y_star,
             rng=self._rng,
         )
+
+        if self._train_policy:
+            # When LOO marginal is available, use it for the edge leading into
+            # the ablated node — gives the bandit a differential signal.
+            # All other edges still receive the full episode reward.
+            if credit_result is not None:
+                ablated_id = credit_result.node_id
+                marginal   = credit_result.marginal
+                sharpened  = {
+                    edge: (marginal if edge[1] == ablated_id else reward_components.total)
+                    for edge in trace.edges_traversed
+                }
+                for edge, r in sharpened.items():
+                    self.policy.update(edge, phi, r)
+            else:
+                self.policy.update_path(
+                    trace.edges_traversed,
+                    phi,
+                    reward_components.total,
+                )
 
         result = EpisodeResult(
             phase=phase,

@@ -324,10 +324,13 @@ class PPGExecutor:
                 if fired:
                     active.append(dst)
 
-            if not active:
-                # Learned guards blocked all successors.  Fall back to the full
-                # successor set so guard sync can never create a structural
-                # dead-end (required fragment types must always be reachable).
+            if not active or not train_mode:
+                # At eval time, bypass guard filtering so the bandit selects
+                # from the same full successor set it trained against (guards
+                # were all-pass during training; filtering post-sync would
+                # block edges the bandit never learned to route around).
+                # Also fallback when guards block all successors to avoid
+                # structural dead-ends.
                 active = list(all_successors)
 
             # Selector breaks ties (or handles single active successor)

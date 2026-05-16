@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from ppg.core.graph import FragmentType, PPGraph, PPGraphBuilder
+from ppg.core.graph import FragmentType, PPGraph, PPGraphBuilder, PromptFragment
 
 
 # ---------------------------------------------------------------------------
@@ -352,44 +352,46 @@ def _build_lean(b: PPGraphBuilder, pick) -> PPGraph:
 
 def _build_rich(b: PPGraphBuilder, pick, frags: dict) -> PPGraph:
     """
-    DOMAIN_PRIMER → TASK_FRAMING → REASONING_STYLE → OUTPUT_CONTRACT
-                                                     ↗
-                               COMPRESSION ─────────
-    (both REASONING_STYLE and COMPRESSION connect to the same OUTPUT_CONTRACT)
+    Multi-variant parallel graph — bandit chooses one variant at each level.
+
+    DOMAIN_PRIMER → TF_v0 ─┬→ RS_v0 ─┬→ OC_v0
+                   TF_v1 ─┤  RS_v1 ─┤  OC_v1
+                            ↓  RS_v2 ─┘
+                            └→ COMP ──→ OC_*
+
+    All TF variants connect to all RS variants (and COMP if present).
+    All RS/COMP variants connect to all OC variants.
+    Bandit has len(TF) * (len(RS) + has_comp) * len(OC) distinct paths.
     """
+    def _add(ftype: FragmentType, template: str) -> str:
+        frag = PromptFragment.create(ftype, template)
+        b.add_fragment_obj(frag)
+        return frag.id
+
     has_primer      = "domain_primer" in frags
     has_compression = "compression"   in frags
 
-    if has_primer:
-        b.add_fragment(FragmentType.DOMAIN_PRIMER,  frags["domain_primer"][0])
-    b.add_fragment(FragmentType.TASK_FRAMING,        pick("task_framing"))
-    b.add_fragment(FragmentType.REASONING_STYLE,     pick("reasoning_style"))
-    b.add_fragment(FragmentType.OUTPUT_CONTRACT,     pick("output_contract"))
-    if has_compression:
-        b.add_fragment(FragmentType.COMPRESSION,    frags["compression"][0])
+    dp_id   = _add(FragmentType.DOMAIN_PRIMER,    frags["domain_primer"][0]) if has_primer else None
+    tf_ids  = [_add(FragmentType.TASK_FRAMING,    t) for t in frags.get("task_framing",    [])]
+    rs_ids  = [_add(FragmentType.REASONING_STYLE, t) for t in frags.get("reasoning_style", [])]
+    oc_ids  = [_add(FragmentType.OUTPUT_CONTRACT, t) for t in frags.get("output_contract", [])]
+    comp_id = _add(FragmentType.COMPRESSION,       frags["compression"][0]) if has_compression else None
 
-    ids = b.node_ids()
+    for tf_id in tf_ids:
+        if dp_id:
+            b.connect(dp_id, tf_id)
+        for rs_id in rs_ids:
+            b.connect(tf_id, rs_id)
+        if comp_id:
+            b.connect(tf_id, comp_id)
 
-    if has_primer and has_compression:
-        dp, tf, rs, oc, comp = ids
-    elif has_primer:
-        dp, tf, rs, oc = ids
-        comp = None
-    elif has_compression:
-        tf, rs, oc, comp = ids
-        dp = None
-    else:
-        tf, rs, oc = ids
-        dp = comp = None
+    for rs_id in rs_ids:
+        for oc_id in oc_ids:
+            b.connect(rs_id, oc_id)
 
-    if dp:
-        b.connect(dp, tf)
-    b.connect(tf, rs)
-    b.connect(rs, oc)
-
-    if comp:
-        b.connect(tf, comp)
-        b.connect(comp, oc)
+    if comp_id:
+        for oc_id in oc_ids:
+            b.connect(comp_id, oc_id)
 
     return b.build()
 
