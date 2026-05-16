@@ -325,16 +325,29 @@ class EvalHarness:
         if not examples:
             raise ValueError("examples must be non-empty")
 
-        ppg_metrics  = self._run_ppg(examples)
-        self._print_method_table("ppg", ppg_metrics)
-
+        ppg_metrics  = self.evaluate_one("ppg", examples)
         base_metrics = {}
         for name in self._cfg.baselines:
-            m = self._run_baseline(name, examples)
-            base_metrics[name] = m
-            self._print_method_table(name, m)
+            base_metrics[name] = self.evaluate_one(name, examples)
 
         return EvalReport(ppg=ppg_metrics, baselines=base_metrics)
+
+    def evaluate_one(self, name: str, examples: list[EvalExample]) -> BaselineMetrics:
+        """
+        Run and score exactly one method, print its per-method table, return metrics.
+
+        name : "ppg" or any baseline name in SUPPORTED_BASELINES
+        """
+        if not examples:
+            raise ValueError("examples must be non-empty")
+
+        m = self._run_ppg(examples) if name == "ppg" else self._run_baseline(name, examples)
+        self._print_method_table(name, m)
+        return m
+
+    def register_external(self, name: str, baseline) -> None:
+        """Register a pre-compiled external baseline so it can be used in evaluate_one()."""
+        self._external[name] = baseline
 
     def _print_method_table(self, name: str, m: "BaselineMetrics") -> None:
         """Print a markdown summary table for one method after its eval run."""

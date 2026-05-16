@@ -464,29 +464,60 @@ def main():
           f"task_acc={stats.task_accuracy('train'):.4f}")
 
     # ------------------------------------------------------------------
-    # 5. Compile external baselines (MIPROv2 + GEPA, heavy mode)
+    # 5+. Evaluate one method at a time — each method fully done before next.
+    #
+    # Order: PPG → MIPROv2 (compile+eval) → GEPA (compile+eval)
+    #        → flat_all → static_best → random_gating → highest_utility
     # ------------------------------------------------------------------
-    external_baselines: dict = {}
+    from ppg.eval.harness import EvalConfig, EvalHarness, EvalReport
 
+    internal_baselines = ["flat_all", "static_best", "random_gating", "highest_utility"]
+    n_methods = 1 + int(args.run_mipro) + int(args.run_gepa) + len(internal_baselines)
+    step = 0
+
+    def _step(label: str) -> str:
+        nonlocal step
+        step += 1
+        return f"[{step}/{n_methods}] {label}"
+
+    harness = EvalHarness(
+        executor=executor,
+        metric=metric,
+        lm=lm,
+        config=EvalConfig(
+            baselines=internal_baselines,
+            show_progress=show_progress,
+            n_workers=args.workers,
+        ),
+        constraint_checker=constraint_checker,
+    )
+
+    all_metrics: dict[str, "BaselineMetrics"] = {}
+
+    # -- PPG --
+    print(_step("Evaluating PPG..."))
+    all_metrics["ppg"] = harness.evaluate_one("ppg", test_ex)
+
+    # -- MIPROv2: compile then eval --
     if args.run_mipro:
-        print("[5a] Compiling MIPROv2 (auto='heavy') ...")
+        print(_step("Compiling + evaluating MIPROv2 (auto='heavy')..."))
         try:
             import dspy
             dspy_model_str = f"openai/{args.model}" if args.provider == "openai" \
                              else f"anthropic/{args.model}"
             dspy.configure(lm=dspy.LM(dspy_model_str))
-
             from ppg.eval.external import MIPROv2Baseline
             seed_prompt = build_seed_prompt(graph)
             mipro = MIPROv2Baseline(metric=metric, auto="heavy")
             mipro.compile(trainset=train_ex, valset=val_ex, seed_instructions=seed_prompt)
-            external_baselines["miprov2"] = mipro
-            print("      MIPROv2 compiled successfully.")
+            harness.register_external("miprov2", mipro)
+            all_metrics["miprov2"] = harness.evaluate_one("miprov2", test_ex)
         except ImportError as e:
             print(f"      SKIP — {e}")
 
+    # -- GEPA: compile then eval --
     if args.run_gepa:
-        print(f"[5b] Compiling GEPA (max_metric_calls={args.gepa_calls}, heavy) ...")
+        print(_step(f"Compiling + evaluating GEPA (max_metric_calls={args.gepa_calls})..."))
         try:
             from ppg.eval.external import GEPABaseline
             seed_prompt = build_seed_prompt(graph)
@@ -504,36 +535,19 @@ def main():
                 seed_prompt=seed_prompt,
                 objective=objective,
             )
-            external_baselines["gepa"] = gepa
-            print("      GEPA compiled successfully.")
+            harness.register_external("gepa", gepa)
+            all_metrics["gepa"] = harness.evaluate_one("gepa", test_ex)
         except ImportError as e:
             print(f"      SKIP — {e}")
 
-    if not args.run_mipro and not args.run_gepa:
-        print("[5/6] Skipping external baselines (use --run-mipro / --run-gepa to enable).")
+    # -- Internal baselines: one at a time --
+    for name in internal_baselines:
+        print(_step(f"Evaluating {name}..."))
+        all_metrics[name] = harness.evaluate_one(name, test_ex)
 
-    # ------------------------------------------------------------------
-    # 6. Evaluate
-    # ------------------------------------------------------------------
-    print("[6/6] Evaluating all baselines on test set...")
-    from ppg.eval.harness import EvalConfig, EvalHarness
-
-    baselines = ["flat_all", "static_best", "random_gating", "highest_utility"]
-    if "miprov2" in external_baselines:
-        baselines.append("miprov2")
-    if "gepa" in external_baselines:
-        baselines.append("gepa")
-
-    harness = EvalHarness(
-        executor=executor,
-        metric=metric,
-        lm=lm,
-        config=EvalConfig(baselines=baselines, show_progress=show_progress,
-                          n_workers=args.workers),
-        constraint_checker=constraint_checker,
-        external_baselines=external_baselines if external_baselines else None,
-    )
-    report = harness.evaluate(test_ex)
+    # Assemble final report from accumulated per-method results
+    ppg_m = all_metrics.pop("ppg")
+    report = EvalReport(ppg=ppg_m, baselines=all_metrics)
 
     # ------------------------------------------------------------------
     # Print results
