@@ -241,6 +241,10 @@ class GEPABaseline:
                 "GEPA required: pip install gepa  "
                 "or: pip install git+https://github.com/gepa-ai/gepa.git"
             ) from None
+        try:
+            from gepa.optimize_anything import ReflectionConfig
+        except ImportError:
+            ReflectionConfig = None
 
         metric    = self._metric
         lm        = self._lm
@@ -263,12 +267,19 @@ class GEPABaseline:
                     scores.append(0.0)
             return float(sum(scores) / len(scores)) if scores else 0.0
 
-        config = GEPAConfig(
-            engine=EngineConfig(
-                max_metric_calls=self._max_metric_calls,
-                reflection_lm=self._reflection_lm,
+        if ReflectionConfig is not None:
+            config = GEPAConfig(
+                engine=EngineConfig(max_metric_calls=self._max_metric_calls),
+                reflection=ReflectionConfig(reflection_lm=self._reflection_lm),
             )
-        )
+        else:
+            # Older GEPA releases stored reflection_lm on EngineConfig.
+            config = GEPAConfig(
+                engine=EngineConfig(
+                    max_metric_calls=self._max_metric_calls,
+                    reflection_lm=self._reflection_lm,
+                )
+            )
 
         result = optimize_anything(
             seed_candidate=seed_prompt,
