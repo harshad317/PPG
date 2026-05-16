@@ -127,8 +127,8 @@ flowchart LR
 flowchart TD
     DP["DOMAIN_PRIMER"] --> TF["TASK_FRAMING"]
     TF --> RS["REASONING_STYLE"]
-    TF --> C["COMPRESSION"]
     RS --> OC["OUTPUT_CONTRACT"]
+    RS --> C["COMPRESSION"]
     C --> OC
 ```
 
@@ -137,7 +137,7 @@ The seed library supports a lean topology and a rich topology:
 | Topology | Shape | Intended use |
 | --- | --- | --- |
 | `lean` | `TASK_FRAMING -> REASONING_STYLE -> OUTPUT_CONTRACT` | Fast sanity checks and topology ablations |
-| `rich` | Adds `DOMAIN_PRIMER` and `COMPRESSION` branch | Main PPG experiments |
+| `rich` | Adds `DOMAIN_PRIMER` and optional post-reasoning `COMPRESSION` | Main PPG experiments |
 
 ### Runtime FSM
 
@@ -447,9 +447,9 @@ datasets into `EvalExample` objects and expose recommended metrics.
 | MBPP | `MBPPLoader` | `MBPPPassAtOneMetric` |
 | TruthfulQA | `TruthfulQALoader` | `F1Metric` |
 | BigBench Hard | `BigBenchHardLoader` | `ExactMatchMetric` |
-| ARC-Challenge | `ARCChallengeLoader` | `ExactMatchMetric` |
+| ARC-Challenge | `ARCChallengeLoader` | `MultipleChoiceMetric` |
 | LiveBench Math | `LiveBenchMathLoader` | `NumericExactMatchMetric` |
-| MMLU | `MMLULoader` | `ExactMatchMetric` |
+| MMLU | `MMLULoader` | `MultipleChoiceMetric` |
 
 Example loader usage:
 

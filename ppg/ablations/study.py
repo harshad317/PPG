@@ -289,13 +289,18 @@ def build_ablation_components(
         lm=lm,
         assembler=assembler,
         constraint_checker=constraint_checker,
-        config=RewardConfig(skip_variance=config.skip_variance),
+        config=RewardConfig(
+            skip_variance=config.skip_variance,
+            constraint_as_task=benchmark in ("ifeval", "ifbench"),
+        ),
     )
 
     credit = CreditAssigner(
         lm=lm,
         assembler=assembler,
         task_metric=metric,
+        constraint_checker=constraint_checker,
+        constraint_as_task=benchmark in ("ifeval", "ifbench"),
         config=CreditAssignerConfig(p_ablate=config.p_ablate),
     )
 

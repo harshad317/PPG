@@ -15,6 +15,7 @@ from ppg.training import (
     ExactMatchMetric,
     F1Metric,
     KeywordConstraintChecker,
+    MultipleChoiceMetric,
     NumericExactMatchMetric,
     PerturbationBuffer,
     RewardComponents,
@@ -156,9 +157,28 @@ class TestSubstringMatchMetric:
         assert self.m.score("Paris is the capital", "paris") == 1.0
 
 
+class TestMultipleChoiceMetric:
+    m = MultipleChoiceMetric()
+
+    def test_exact_letter(self):
+        assert self.m.score("A", "A") == 1.0
+
+    def test_extracts_letter_from_prose(self):
+        assert self.m.score("The answer is C.", "C") == 1.0
+
+    def test_extracts_last_option(self):
+        assert self.m.score("A is tempting, but the answer is D.", "D") == 1.0
+
+    def test_answer_pattern_beats_later_explanation_letters(self):
+        assert self.m.score("The answer is A because B is too broad.", "A") == 1.0
+
+    def test_wrong_letter(self):
+        assert self.m.score("The answer is B.", "C") == 0.0
+
+
 class TestMetricRegistry:
     def test_all_keys_present(self):
-        for key in ("exact_match", "numeric_exact_match", "f1", "substring"):
+        for key in ("exact_match", "numeric_exact_match", "f1", "substring", "multiple_choice"):
             assert key in METRIC_REGISTRY
 
     def test_registry_instances_work(self):

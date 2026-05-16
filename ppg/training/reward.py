@@ -96,12 +96,41 @@ class SubstringMatchMetric:
         return 1.0 if _normalize(reference) in _normalize(prediction) else 0.0
 
 
+class MultipleChoiceMetric:
+    """
+    Extracts the final standalone answer option before comparing.
+
+    Intended for ARC/MMLU-style references such as A/B/C/D, while tolerating
+    short prose outputs like "The answer is A.".
+    """
+
+    _ANSWER_RE = re.compile(
+        r"(?:final\s+answer|answer|option|choice)\s*(?:is|:)?\s*[\(\[]?([A-J]|[1-9])[\)\].:]?",
+        re.IGNORECASE,
+    )
+    _OPTION_RE = re.compile(r"\b([A-J]|[1-9])\b", re.IGNORECASE)
+
+    def score(self, prediction: str, reference: str) -> float:
+        return 1.0 if self._extract(prediction) == self._extract(reference) else 0.0
+
+    @classmethod
+    def _extract(cls, text: str) -> str:
+        answer_matches = cls._ANSWER_RE.findall(text.strip())
+        if answer_matches:
+            return answer_matches[-1].upper()
+        matches = cls._OPTION_RE.findall(text.strip())
+        if matches:
+            return matches[-1].upper()
+        return _normalize(text).upper()
+
+
 # Registry for easy lookup by name
 METRIC_REGISTRY: dict[str, TaskMetric] = {
     "exact_match":         ExactMatchMetric(),
     "numeric_exact_match": NumericExactMatchMetric(),
     "f1":                  F1Metric(),
     "substring":           SubstringMatchMetric(),
+    "multiple_choice":     MultipleChoiceMetric(),
 }
 
 
@@ -547,7 +576,7 @@ class RewardComputer:
 
         r_var = (
             0.0 if self.cfg.skip_variance
-            else self._variance(trace, x, y_star)
+            else self._variance(trace, x, y_star, constraints, metadata)
         )
 
         total = (
@@ -573,7 +602,14 @@ class RewardComputer:
         normalised = token_count / max(1, self.cfg.max_tokens_ref)
         return -self.cfg.lambda_cost * normalised
 
-    def _variance(self, trace: PathTrace, x: str, y_star: str) -> float:
+    def _variance(
+        self,
+        trace: PathTrace,
+        x: str,
+        y_star: str,
+        constraints: list[str],
+        metadata: dict | None,
+    ) -> float:
         """
         Estimate Var[r_task | perturb(x)] using m perturbed inputs.
 
@@ -593,12 +629,13 @@ class RewardComputer:
         node_ids = trace.node_ids
         assembler = self.assembler
         lm = self.lm
-        metric = self.metric
 
         def _score(x_p: str) -> float:
             prompt_p = assembler.assemble(node_ids, {"input": x_p})
             y_p      = lm.complete(prompt_p)
-            return metric.score(y_p, y_star)
+            if self.cfg.constraint_as_task and self.checker is not None:
+                return self.checker.check(y_p, constraints or [], metadata)
+            return self.metric.score(y_p, y_star)
 
         with ThreadPoolExecutor(max_workers=len(perturbed_inputs)) as pool:
             scores = list(pool.map(_score, perturbed_inputs))

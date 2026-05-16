@@ -387,13 +387,13 @@ def _build_rich(b: PPGraphBuilder, pick, frags: dict) -> PPGraph:
     Multi-variant parallel graph — bandit chooses one variant at each level.
 
     DOMAIN_PRIMER → TF_v0 ─┬→ RS_v0 ─┬→ OC_v0
-                   TF_v1 ─┤  RS_v1 ─┤  OC_v1
-                            ↓  RS_v2 ─┘
-                            └→ COMP ──→ OC_*
+                   TF_v1 ─┘  RS_v1 ─┤  OC_v1
+                              RS_v2 ─┘
+                                └→ COMP ─→ OC_*
 
-    All TF variants connect to all RS variants (and COMP if present).
-    All RS/COMP variants connect to all OC variants.
-    Bandit has len(TF) * (len(RS) + has_comp) * len(OC) distinct paths.
+    All TF variants connect to all RS variants.
+    RS variants connect directly to all OC variants and, when present, to
+    COMP before OC. Compression is an optional post-reasoning add-on.
     """
     def _add(ftype: FragmentType, template: str) -> str:
         frag = PromptFragment.create(ftype, template)
@@ -414,12 +414,12 @@ def _build_rich(b: PPGraphBuilder, pick, frags: dict) -> PPGraph:
             b.connect(dp_id, tf_id)
         for rs_id in rs_ids:
             b.connect(tf_id, rs_id)
-        if comp_id:
-            b.connect(tf_id, comp_id)
 
     for rs_id in rs_ids:
         for oc_id in oc_ids:
             b.connect(rs_id, oc_id)
+        if comp_id:
+            b.connect(rs_id, comp_id)
 
     if comp_id:
         for oc_id in oc_ids:

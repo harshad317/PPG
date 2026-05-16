@@ -872,8 +872,8 @@ class TestARCChallengeLoader:
         assert len(examples) == 1
 
     def test_recommended_metric_is_exact_match(self):
-        from ppg.training.reward import ExactMatchMetric
-        assert isinstance(ARCChallengeLoader.recommended_metric(), ExactMatchMetric)
+        from ppg.training.reward import MultipleChoiceMetric
+        assert isinstance(ARCChallengeLoader.recommended_metric(), MultipleChoiceMetric)
 
 
 # ---------------------------------------------------------------------------
@@ -997,5 +997,5 @@ class TestMMLULoader:
         assert len(examples) == len(MMLU_ROWS)
 
     def test_recommended_metric_is_exact_match(self):
-        from ppg.training.reward import ExactMatchMetric
-        assert isinstance(MMLULoader.recommended_metric(), ExactMatchMetric)
+        from ppg.training.reward import MultipleChoiceMetric
+        assert isinstance(MMLULoader.recommended_metric(), MultipleChoiceMetric)

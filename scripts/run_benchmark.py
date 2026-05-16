@@ -127,6 +127,14 @@ def load_splits(
         te = data[n_tr + n_v:n_tr + n_v + n_te]
         return tr, v, te
 
+    def _split_two(examples, n_v, n_te):
+        """Partition a single held-out split into disjoint val / test slices."""
+        data = list(examples)
+        rng.shuffle(data)
+        v  = data[:n_v]
+        te = data[n_v:n_v + n_te]
+        return v, te
+
     def _cap(lst, n):
         out = list(lst)
         rng.shuffle(out)
@@ -138,8 +146,8 @@ def load_splits(
     # -----------------------------------------------------------------------
     if benchmark == "gsm8k":
         loader = GSM8KLoader()
-        train  = _cap(loader.load("train", seed=seed), n_train)
-        val    = _cap(loader.load("test",  seed=seed + 1), n_val)
+        train_pool = loader.load("train", seed=seed)
+        train, val, _ = _split_single(train_pool, n_train, n_val, 0)
         test   = _cap(loader.load("test",  seed=seed + 2), n_test)
         metric = loader.recommended_metric()
         objective = "Maximize exact-match accuracy on multi-step arithmetic word problems."
@@ -172,8 +180,8 @@ def load_splits(
     elif benchmark == "hotpotqa":
         loader = HotpotQALoader()
         train  = _cap(loader.load("train",      seed=seed),     n_train)
-        val    = _cap(loader.load("validation", seed=seed + 1), n_val)
-        test   = _cap(loader.load("validation", seed=seed + 2), n_test)
+        heldout = loader.load("validation", seed=seed + 1)
+        val, test = _split_two(heldout, n_val, n_test)
         metric = loader.recommended_metric()
         objective = "Maximize token-F1 on multi-hop reading-comprehension questions."
 
@@ -181,8 +189,8 @@ def load_splits(
     elif benchmark == "drop":
         loader = DROPLoader()
         train  = _cap(loader.load("train",      seed=seed),     n_train)
-        val    = _cap(loader.load("validation", seed=seed + 1), n_val)
-        test   = _cap(loader.load("validation", seed=seed + 2), n_test)
+        heldout = loader.load("validation", seed=seed + 1)
+        val, test = _split_two(heldout, n_val, n_test)
         metric = loader.recommended_metric()
         objective = "Maximize F1 on discrete-reasoning passages (arithmetic, counting, sorting)."
 
@@ -190,7 +198,7 @@ def load_splits(
     elif benchmark == "mbpp":
         loader = MBPPLoader()
         train  = _cap(loader.load("train", seed=seed),     n_train)
-        val    = _cap(loader.load("test",  seed=seed + 1), n_val)
+        val    = _cap(loader.load("validation", seed=seed + 1), n_val)
         test   = _cap(loader.load("test",  seed=seed + 2), n_test)
         metric = loader.recommended_metric()
         objective = "Generate correct Python functions that pass all provided test assertions."
@@ -215,7 +223,7 @@ def load_splits(
     elif benchmark == "arc_challenge":
         loader = ARCChallengeLoader()
         train  = _cap(loader.load("train", seed=seed),     n_train)
-        val    = _cap(loader.load("test",  seed=seed + 1), n_val)
+        val    = _cap(loader.load("validation", seed=seed + 1), n_val)
         test   = _cap(loader.load("test",  seed=seed + 2), n_test)
         metric = loader.recommended_metric()
         objective = "Maximize exact-match accuracy on hard science multiple-choice questions."
@@ -231,14 +239,18 @@ def load_splits(
     # -----------------------------------------------------------------------
     elif benchmark == "mmlu":
         loader = MMLULoader()
-        # dev split is tiny (5 per subject); supplement with validation when n_train > available
+        # dev split is tiny (5 per subject); supplement with auxiliary_train when available.
         dev_ex  = loader.load(subject=mmlu_subject, split="dev",        seed=seed)
         val_ex  = loader.load(subject=mmlu_subject, split="validation", seed=seed)
         test_ex = loader.load(subject=mmlu_subject, split="test",       seed=seed)
-        train_pool = dev_ex + val_ex
+        try:
+            aux_ex = loader.load(subject=mmlu_subject, split="auxiliary_train", seed=seed)
+        except Exception:
+            aux_ex = []
+        train_pool = dev_ex + aux_ex
         rng.shuffle(train_pool)
         train = train_pool[:n_train]
-        val   = _cap(test_ex, n_val)
+        val   = _cap(val_ex, n_val) if val_ex else _cap(test_ex, n_val)
         test  = _cap(test_ex, n_test)
         metric = loader.recommended_metric()
         objective = f"Maximize exact-match accuracy on MMLU subject: {mmlu_subject}."
@@ -765,7 +777,7 @@ def main():
         "seed":           args.seed,
         "train_time_s":   round(train_time, 1),
         "training_stats": stats.summary(),
-        "results":        table,
+        "results":        rows,
         "winner":         winner,
         "ppg_vs_flat_all":   round(ppg_vs_flat, 4),
         "optimized_prompts": optimized_prompts,

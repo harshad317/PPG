@@ -28,9 +28,9 @@ DROP          : F1Metric
 MBPP          : MBPPPassAtOneMetric      (executes code against test cases in subprocess)
 TruthfulQA    : F1Metric                (official eval also uses MC accuracy)
 BigBenchHard  : ExactMatchMetric
-ARCChallenge  : ExactMatchMetric        (letter A/B/C/D match)
+ARCChallenge  : MultipleChoiceMetric    (extracts letter A/B/C/D from prose)
 LiveBenchMath : NumericExactMatchMetric
-MMLU          : ExactMatchMetric        (letter A/B/C/D match)
+MMLU          : MultipleChoiceMetric    (extracts letter A/B/C/D from prose)
 
 Security note
 -------------
@@ -685,7 +685,7 @@ class ARCChallengeLoader:
     Dataset : allenai/ai2_arc  (config: ARC-Challenge)
     x       : question + labeled choices (A. ... \\nB. ... \\nC. ... \\nD. ...)
     y_star  : answerKey letter (A/B/C/D; rarely 1/2/3/4 in some rows)
-    Metric  : ExactMatchMetric
+    Metric  : MultipleChoiceMetric
 
     ARC-Challenge contains questions that require scientific knowledge beyond
     simple retrieval — IR and word-co-occurrence methods score below random.
@@ -727,8 +727,8 @@ class ARCChallengeLoader:
 
     @staticmethod
     def recommended_metric():
-        from ppg.training.reward import ExactMatchMetric
-        return ExactMatchMetric()
+        from ppg.training.reward import MultipleChoiceMetric
+        return MultipleChoiceMetric()
 
 
 # ---------------------------------------------------------------------------
@@ -795,7 +795,7 @@ class MMLULoader:
     Dataset : cais/mmlu  (config: subject name or "all")
     x       : question + labeled choices (A. ... \\nB. ... \\nC. ... \\nD. ...)
     y_star  : correct answer letter (A/B/C/D)
-    Metric  : ExactMatchMetric
+    Metric  : MultipleChoiceMetric
 
     Use subject="all" to load all subjects combined (14,042 test examples).
     Use a specific subject name for targeted evaluation. See SUBJECTS for all 57.
@@ -871,5 +871,5 @@ class MMLULoader:
 
     @staticmethod
     def recommended_metric():
-        from ppg.training.reward import ExactMatchMetric
-        return ExactMatchMetric()
+        from ppg.training.reward import MultipleChoiceMetric
+        return MultipleChoiceMetric()
