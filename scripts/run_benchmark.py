@@ -14,7 +14,7 @@ static_best    : greedy highest-utility fixed path, no routing
 random_gating  : random node selection, no learning
 highest_utility: greedy on learned utility scores, no UCB
 miprov2        : MIPROv2 (DSPy) — requires --run-mipro + dspy-ai installed
-gepa           : GEPA optimize_anything — requires --run-gepa + gepa installed
+gepa           : GEPA (DSPy) — requires --run-gepa + dspy-ai installed
 
 Graph fallback map (benchmarks without dedicated fragments use the closest domain)
 ----------------------------------------------------------------------------------
@@ -551,22 +551,24 @@ def main():
     if args.run_gepa:
         _eval_step(f"Compiling + evaluating GEPA (max_metric_calls={args.gepa_calls})...")
         try:
+            import dspy as _dspy
             from ppg.eval.external import GEPABaseline
             seed_prompt = build_seed_prompt(graph)
+            reflection_lm = (
+                _dspy.LM(f"openai/{args.reflection_model}")
+                if args.reflection_model else None
+            )
             gepa = GEPABaseline(
                 metric=metric,
-                lm_client=lm,
-                reflection_lm=f"openai/{args.reflection_model}",
+                reflection_lm=reflection_lm,
                 max_metric_calls=args.gepa_calls,
-                n_eval_examples=20,
                 seed=args.seed,
             )
             lm.reset()
             gepa.compile(
                 trainset=train_ex,
                 valset=val_ex,
-                seed_prompt=seed_prompt,
-                objective=objective,
+                seed_instructions=seed_prompt,
             )
             gepa_opt_calls = lm.reset()
             harness.register_external("gepa", gepa)

@@ -35,6 +35,75 @@ def make_test(n: int = 3):
     return [EvalExample(x=f"Q{i}", y_star=f"A{i}") for i in range(n)]
 
 
+def _make_dspy_stub(*, include_gepa: bool = False):
+    """Return (dspy_mod, patches_dict) with a minimal DSPy stub."""
+    dspy_mod = types.ModuleType("dspy")
+
+    class FakeExample:
+        def __init__(self, **kw):
+            for k, v in kw.items():
+                setattr(self, k, v)
+        def with_inputs(self, *a):
+            return self
+
+    class FakeSig:
+        instructions = ""
+        def __init__(self, *a, **kw):
+            self.instructions = kw.get("instructions", "")
+
+    class FakePredict:
+        def __init__(self, sig):
+            self.signature = sig
+        def __call__(self, **kwargs):
+            return FakeExample(response="42")
+
+    class FakeDSPyModule:
+        def __init__(self):
+            self.predict = FakePredict(FakeSig())
+        def __call__(self, **kwargs):
+            return FakeExample(response="42")
+
+    class FakeMIPROv2:
+        def __init__(self, metric, auto="medium"):
+            self.metric = metric
+            self.auto   = auto
+        def compile(self, program, trainset, valset=None):
+            return program
+
+    dspy_mod.Example   = FakeExample
+    dspy_mod.Signature = FakeSig
+    dspy_mod.Predict   = FakePredict
+    dspy_mod.Module    = FakeDSPyModule
+    dspy_mod.MIPROv2   = FakeMIPROv2
+    dspy_mod.configure = lambda **kw: None
+
+    patches = {"dspy": dspy_mod}
+
+    if include_gepa:
+        class FakeGEPA:
+            _last_instance = None
+
+            def __init__(self, metric, *, reflection_lm=None,
+                         max_metric_calls=150, seed=0, **kw):
+                self.metric           = metric
+                self.reflection_lm    = reflection_lm
+                self.max_metric_calls = max_metric_calls
+                self.seed             = seed
+                FakeGEPA._last_instance = self
+                self._compile_kwargs = {}
+
+            def compile(self, program, *, trainset, valset=None, **kw):
+                self._compile_kwargs = {"trainset": trainset, "valset": valset}
+                return program
+
+        teleprompt_mod      = types.ModuleType("dspy.teleprompt")
+        teleprompt_mod.GEPA = FakeGEPA
+        dspy_mod.teleprompt = teleprompt_mod
+        patches["dspy.teleprompt"] = teleprompt_mod
+
+    return dspy_mod, patches
+
+
 # ---------------------------------------------------------------------------
 # MIPROv2Baseline
 # ---------------------------------------------------------------------------
@@ -53,46 +122,8 @@ class TestMIPROv2Baseline:
 
     def test_compile_and_run(self):
         """Smoke-test compile+run using a mock dspy module."""
-        # Build a minimal dspy stub
-        dspy_mod = types.ModuleType("dspy")
-
-        class FakeExample:
-            def __init__(self, **kwargs):
-                for k, v in kwargs.items():
-                    setattr(self, k, v)
-            def with_inputs(self, *args):
-                return self
-
-        class FakeSig:
-            def __init__(self, *args, **kwargs): pass
-            def with_instructions(self, text): return self
-
-        class FakePredict:
-            def __init__(self, sig):
-                self.signature = sig
-            def __call__(self, **kwargs):
-                return FakeExample(response="42")
-
-        class FakeDSPyModule:
-            def __init__(self): pass
-            def __call__(self, **kwargs):
-                return FakeExample(response="42")
-
-        class FakeMIPROv2:
-            def __init__(self, metric, auto="medium"):
-                self.metric = metric
-                self.auto   = auto
-            def compile(self, program, trainset):
-                return program
-
-        dspy_mod.Example   = FakeExample
-        dspy_mod.Signature = FakeSig
-        dspy_mod.Predict   = FakePredict
-        dspy_mod.Module    = FakeDSPyModule
-        dspy_mod.MIPROv2   = FakeMIPROv2
-        dspy_mod.configure = lambda **kwargs: None
-
-        with patch.dict(sys.modules, {"dspy": dspy_mod}):
+        _, patches = _make_dspy_stub()
+        with patch.dict(sys.modules, patches):
             b = MIPROv2Baseline(metric=ExactMatchMetric(), auto="light")
             b.compile(trainset=make_train(), seed_instructions="Solve: {input}")
             response, tokens = b.run(EvalExample(x="1+1", y_star="2"))
@@ -105,35 +136,17 @@ class TestMIPROv2Baseline:
         """Verify auto kwarg flows through to MIPROv2 constructor."""
         captured = {}
 
-        dspy_mod = types.ModuleType("dspy")
+        _, patches = _make_dspy_stub()
+        orig_mipro = patches["dspy"].MIPROv2
 
-        class FakeExample:
-            def __init__(self, **kw):
-                [setattr(self, k, v) for k, v in kw.items()]
-            def with_inputs(self, *a):
-                return self
-
-        class FakeSig:
-            def __init__(self, *a, **kw): pass
-            def with_instructions(self, t): return self
-
-        class FakeDSPyModule:
-            def __init__(self): pass
-
-        class FakeMIPROv2:
+        class TrackingMIPROv2(orig_mipro):
             def __init__(self, metric, auto="medium"):
                 captured["auto"] = auto
-            def compile(self, program, trainset):
-                return program
+                super().__init__(metric=metric, auto=auto)
 
-        dspy_mod.Example   = FakeExample
-        dspy_mod.Signature = FakeSig
-        dspy_mod.Predict   = lambda sig: MagicMock(signature=sig)
-        dspy_mod.Module    = FakeDSPyModule
-        dspy_mod.MIPROv2   = FakeMIPROv2
-        dspy_mod.configure = lambda **kw: None
+        patches["dspy"].MIPROv2 = TrackingMIPROv2
 
-        with patch.dict(sys.modules, {"dspy": dspy_mod}):
+        with patch.dict(sys.modules, patches):
             b = MIPROv2Baseline(metric=ExactMatchMetric(), auto="heavy")
             b.compile(trainset=make_train()[:2])
 
@@ -146,230 +159,171 @@ class TestMIPROv2Baseline:
 
 class TestGEPABaseline:
     def test_run_before_compile_raises(self):
-        b = GEPABaseline(metric=ExactMatchMetric(), lm_client=FixedLM())
+        b = GEPABaseline(metric=ExactMatchMetric())
         with pytest.raises(RuntimeError, match="compile"):
             b.run(EvalExample(x="q", y_star="a"))
 
-    def test_import_error_when_gepa_missing(self):
-        b = GEPABaseline(metric=ExactMatchMetric(), lm_client=FixedLM())
-        with patch.dict(sys.modules, {
-            "gepa": None,
-            "gepa.optimize_anything": None,
-        }):
+    def test_import_error_when_dspy_missing(self):
+        b = GEPABaseline(metric=ExactMatchMetric())
+        with patch.dict(sys.modules, {"dspy": None, "dspy.teleprompt": None}):
             with pytest.raises((ImportError, TypeError)):
-                b.compile(
-                    trainset=make_train(),
-                    valset=make_test(),
-                    seed_prompt="Solve the following problem.",
-                )
+                b.compile(trainset=make_train(), seed_instructions="Solve.")
 
-    def test_compile_calls_optimize_anything(self):
-        """Verify optimize_anything is called with correct seed and evaluator."""
-        captured = {}
+    def test_compile_and_run(self):
+        """Smoke-test compile+run using a DSPy GEPA stub."""
+        _, patches = _make_dspy_stub(include_gepa=True)
+        with patch.dict(sys.modules, patches):
+            b = GEPABaseline(metric=ExactMatchMetric(), max_metric_calls=30, seed=7)
+            b.compile(trainset=make_train(), valset=make_test(),
+                      seed_instructions="Solve the following.")
+            response, tokens = b.run(EvalExample(x="1+1", y_star="2"))
 
-        class FakeResult:
-            best_candidate = "Optimized prompt text"
+        assert isinstance(response, str)
+        assert isinstance(tokens, int)
+        assert tokens >= 0
 
-        def fake_optimize_anything(seed_candidate, evaluator, objective, config):
-            captured["seed"]      = seed_candidate
-            captured["objective"] = objective
-            captured["config"]    = config
-            score = evaluator(seed_candidate)
-            captured["score"] = score
-            return FakeResult()
+    def test_reflection_lm_forwarded_to_gepa(self):
+        """reflection_lm passed to constructor must reach GEPA.__init__."""
+        _, patches = _make_dspy_stub(include_gepa=True)
+        FakeGEPA = patches["dspy.teleprompt"].GEPA
+        sentinel = object()
 
-        class FakeEngineConfig:
-            def __init__(self, max_metric_calls=100, reflection_lm=None):
-                self.max_metric_calls = max_metric_calls
-                self.reflection_lm   = reflection_lm
+        with patch.dict(sys.modules, patches):
+            b = GEPABaseline(metric=ExactMatchMetric(), reflection_lm=sentinel)
+            b.compile(trainset=make_train()[:2])
 
-        class FakeGEPAConfig:
-            def __init__(self, engine=None):
-                self.engine = engine
+        assert FakeGEPA._last_instance is not None
+        assert FakeGEPA._last_instance.reflection_lm is sentinel
 
-        gepa_mod      = types.ModuleType("gepa")
-        gepa_oa_mod   = types.ModuleType("gepa.optimize_anything")
-        gepa_oa_mod.optimize_anything = fake_optimize_anything
-        gepa_oa_mod.GEPAConfig        = FakeGEPAConfig
-        gepa_oa_mod.EngineConfig      = FakeEngineConfig
-        gepa_oa_mod.log               = lambda msg: None
+    def test_reflection_lm_none_not_forwarded(self):
+        """reflection_lm=None must not be passed as kwarg (GEPA uses default)."""
+        _, patches = _make_dspy_stub(include_gepa=True)
+        FakeGEPA = patches["dspy.teleprompt"].GEPA
 
-        with patch.dict(sys.modules, {
-            "gepa": gepa_mod,
-            "gepa.optimize_anything": gepa_oa_mod,
-        }):
-            lm = FixedLM("42")
-            b  = GEPABaseline(
-                metric=ExactMatchMetric(),
-                lm_client=lm,
-                reflection_lm="openai/gpt-4o",
-                max_metric_calls=50,
-                n_eval_examples=3,
-                seed=0,
-            )
-            b.compile(
-                trainset=make_train(),
-                valset=make_test(),
-                seed_prompt="Initial prompt.",
-                objective="Maximize accuracy.",
-            )
+        with patch.dict(sys.modules, patches):
+            b = GEPABaseline(metric=ExactMatchMetric(), reflection_lm=None)
+            b.compile(trainset=make_train()[:2])
 
-        assert captured["seed"] == "Initial prompt."
-        assert captured["objective"] == "Maximize accuracy."
-        assert isinstance(captured["score"], float)
-        assert 0.0 <= captured["score"] <= 1.0
-        # reflection_lm must reach EngineConfig
-        assert captured["config"].engine.reflection_lm == "openai/gpt-4o"
-        assert captured["config"].engine.max_metric_calls == 50
+        assert FakeGEPA._last_instance.reflection_lm is None
 
-    def test_evaluator_samples_valset_not_trainset(self):
-        """Evaluator must use valset examples when valset is non-empty."""
-        seen_inputs: list[str] = []
+    def test_max_metric_calls_forwarded(self):
+        _, patches = _make_dspy_stub(include_gepa=True)
+        FakeGEPA = patches["dspy.teleprompt"].GEPA
 
-        class FakeResult:
-            best_candidate = "p"
+        with patch.dict(sys.modules, patches):
+            b = GEPABaseline(metric=ExactMatchMetric(), max_metric_calls=77)
+            b.compile(trainset=make_train()[:2])
 
-        def fake_optimize_anything(seed_candidate, evaluator, objective, config):
-            evaluator(seed_candidate)
-            return FakeResult()
+        assert FakeGEPA._last_instance.max_metric_calls == 77
 
-        class FakeEngineConfig:
-            def __init__(self, max_metric_calls=100, reflection_lm=None): pass
+    def test_valset_forwarded_to_compile(self):
+        """valset must be passed to GEPA.compile() when non-empty."""
+        _, patches = _make_dspy_stub(include_gepa=True)
+        FakeGEPA = patches["dspy.teleprompt"].GEPA
+        val = make_test(2)
 
-        class FakeGEPAConfig:
-            def __init__(self, engine=None): pass
+        with patch.dict(sys.modules, patches):
+            b = GEPABaseline(metric=ExactMatchMetric())
+            b.compile(trainset=make_train(3), valset=val)
 
-        gepa_mod    = types.ModuleType("gepa")
-        gepa_oa_mod = types.ModuleType("gepa.optimize_anything")
-        gepa_oa_mod.optimize_anything = fake_optimize_anything
-        gepa_oa_mod.GEPAConfig        = FakeGEPAConfig
-        gepa_oa_mod.EngineConfig      = FakeEngineConfig
-        gepa_oa_mod.log               = lambda msg: None
+        kw = FakeGEPA._last_instance._compile_kwargs
+        assert kw["valset"] is not None
+        assert len(kw["valset"]) == len(val)
 
-        # trainset inputs start with "What is", valset inputs start with "Q"
-        trainset = make_train(5)
-        valset   = make_test(3)
+    def test_no_valset_compile_called_without_valset(self):
+        """When valset is empty, GEPA.compile() receives valset=None."""
+        _, patches = _make_dspy_stub(include_gepa=True)
+        FakeGEPA = patches["dspy.teleprompt"].GEPA
 
-        class TrackingLM:
-            def complete(self, prompt: str) -> str:
-                seen_inputs.append(prompt)
-                return "0"
+        with patch.dict(sys.modules, patches):
+            b = GEPABaseline(metric=ExactMatchMetric())
+            b.compile(trainset=make_train(3), valset=[])
 
-        with patch.dict(sys.modules, {
-            "gepa": gepa_mod,
-            "gepa.optimize_anything": gepa_oa_mod,
-        }):
-            b = GEPABaseline(
-                metric=ExactMatchMetric(),
-                lm_client=TrackingLM(),
-                n_eval_examples=10,  # more than valset size — takes all 3
-                seed=0,
-            )
-            b.compile(trainset=trainset, valset=valset,
-                      seed_prompt="p", objective="o")
+        assert FakeGEPA._last_instance._compile_kwargs["valset"] is None
 
-        # All LM calls must use valset inputs (Q0, Q1, Q2), not trainset inputs
-        for prompt in seen_inputs:
-            assert any(f"Q{i}" in prompt for i in range(3)), (
-                f"Expected valset input in prompt, got: {prompt!r}"
-            )
+    def test_gepa_metric_returns_score_and_feedback(self):
+        """The internal metric adapter must return a (float, str) tuple."""
+        captured_metric = {}
 
-    def test_evaluator_falls_back_to_trainset_when_valset_empty(self):
-        """When valset is empty, evaluator uses trainset."""
-        seen_inputs: list[str] = []
+        _, patches = _make_dspy_stub(include_gepa=True)
+        orig_gepa = patches["dspy.teleprompt"].GEPA
 
-        class FakeResult:
-            best_candidate = "p"
+        class CapturingGEPA(orig_gepa):
+            def __init__(self, metric, **kw):
+                captured_metric["fn"] = metric
+                super().__init__(metric=metric, **kw)
 
-        def fake_optimize_anything(seed_candidate, evaluator, objective, config):
-            evaluator(seed_candidate)
-            return FakeResult()
+        patches["dspy.teleprompt"].GEPA = CapturingGEPA
 
-        class FakeEngineConfig:
-            def __init__(self, max_metric_calls=100, reflection_lm=None): pass
+        with patch.dict(sys.modules, patches):
+            b = GEPABaseline(metric=ExactMatchMetric())
+            b.compile(trainset=make_train(2))
 
-        class FakeGEPAConfig:
-            def __init__(self, engine=None): pass
+        fn = captured_metric["fn"]
+        assert fn is not None
 
-        gepa_mod    = types.ModuleType("gepa")
-        gepa_oa_mod = types.ModuleType("gepa.optimize_anything")
-        gepa_oa_mod.optimize_anything = fake_optimize_anything
-        gepa_oa_mod.GEPAConfig        = FakeGEPAConfig
-        gepa_oa_mod.EngineConfig      = FakeEngineConfig
-        gepa_oa_mod.log               = lambda msg: None
+        class FakePred:
+            response = "42"
 
-        class TrackingLM:
-            def complete(self, prompt: str) -> str:
-                seen_inputs.append(prompt)
-                return "0"
+        ex = patches["dspy"].Example(input="q", y_star="42")
+        result = fn(ex, FakePred())
+        assert isinstance(result, tuple) and len(result) == 2
+        score, feedback = result
+        assert isinstance(score, float)
+        assert isinstance(feedback, str)
+        assert "Expected" in feedback
 
-        with patch.dict(sys.modules, {
-            "gepa": gepa_mod,
-            "gepa.optimize_anything": gepa_oa_mod,
-        }):
-            b = GEPABaseline(
-                metric=ExactMatchMetric(),
-                lm_client=TrackingLM(),
-                n_eval_examples=3,
-                seed=0,
-            )
-            b.compile(trainset=make_train(5), valset=[],
-                      seed_prompt="p", objective="o")
+    def test_prompt_prefix_extracted_from_signature(self):
+        """_prompt_prefix must be set from compiled program's signature instructions."""
+        _, patches = _make_dspy_stub(include_gepa=True)
 
-        assert len(seen_inputs) > 0  # evaluator ran using trainset
+        # Make FakeSig store the instructions passed in constructor
+        class TrackedSig:
+            def __init__(self, *a, **kw):
+                self.instructions = kw.get("instructions", "")
 
-    def test_run_uses_optimized_prompt(self):
-        """run() prepends optimized prompt to input before calling lm."""
-        b = GEPABaseline(metric=ExactMatchMetric(), lm_client=FixedLM("answer"))
-        b._optimized_prompt = "USE THIS PROMPT"
+        class TrackedPredict:
+            def __init__(self, sig):
+                self.signature = sig
+            def __call__(self, **kw):
+                FakeEx = patches["dspy"].Example
+                return FakeEx(response="ok")
 
-        response, tokens = b.run(EvalExample(x="test question", y_star="answer"))
+        patches["dspy"].Signature = TrackedSig
+        patches["dspy"].Predict   = TrackedPredict
 
-        assert response == "answer"
-        assert tokens > 0
+        with patch.dict(sys.modules, patches):
+            b = GEPABaseline(metric=ExactMatchMetric())
+            b.compile(trainset=make_train(2), seed_instructions="MY SEED")
 
-    def test_run_lm_called_with_prompt_plus_input(self):
-        lm = FixedLM("answer")
-        b  = GEPABaseline(metric=ExactMatchMetric(), lm_client=lm)
-        b._optimized_prompt = "PREFIX"
+        assert b._prompt_prefix == "MY SEED"
 
-        b.run(EvalExample(x="MY_INPUT", y_star="x"))
+    def test_run_uses_program_not_lm_client(self):
+        """run() must call self._program(), not a separate lm_client."""
+        _, patches = _make_dspy_stub(include_gepa=True)
+        with patch.dict(sys.modules, patches):
+            b = GEPABaseline(metric=ExactMatchMetric())
+            b.compile(trainset=make_train(2))
+            response, tokens = b.run(EvalExample(x="INPUT", y_star="X"))
 
-        assert len(lm.calls) == 1
-        assert "PREFIX" in lm.calls[0]
-        assert "MY_INPUT" in lm.calls[0]
+        assert isinstance(response, str)
+        assert tokens >= 0
 
-    def test_best_candidate_dict_extracted(self):
-        """When best_candidate is a dict, extract system_prompt key."""
-        b = GEPABaseline(metric=ExactMatchMetric(), lm_client=FixedLM())
+    def test_verify_available(self):
+        _, patches = _make_dspy_stub(include_gepa=True)
+        patches["dspy"].__version__ = "2.5.0"
 
-        class FakeResult:
-            best_candidate = {"system_prompt": "extracted prompt"}
+        with patch.dict(sys.modules, patches):
+            info = GEPABaseline.verify()
 
-        class FakeEngineConfig:
-            def __init__(self, max_metric_calls=100, reflection_lm=None): pass
+        assert info["available"] is True
+        assert info["has_gepa"] is True
 
-        class FakeGEPAConfig:
-            def __init__(self, engine=None): pass
-
-        gepa_mod    = types.ModuleType("gepa")
-        gepa_oa_mod = types.ModuleType("gepa.optimize_anything")
-        gepa_oa_mod.optimize_anything = lambda seed_candidate, evaluator, objective, config: FakeResult()
-        gepa_oa_mod.GEPAConfig        = FakeGEPAConfig
-        gepa_oa_mod.EngineConfig      = FakeEngineConfig
-        gepa_oa_mod.log               = lambda msg: None
-
-        with patch.dict(sys.modules, {
-            "gepa": gepa_mod,
-            "gepa.optimize_anything": gepa_oa_mod,
-        }):
-            b.compile(
-                trainset=make_train()[:2],
-                valset=make_test()[:1],
-                seed_prompt="s",
-            )
-
-        assert b._optimized_prompt == "extracted prompt"
+    def test_verify_missing_dspy(self):
+        with patch.dict(sys.modules, {"dspy": None, "dspy.teleprompt": None}):
+            info = GEPABaseline.verify()
+        assert info["available"] is False
+        assert "error" in info
 
 
 # ---------------------------------------------------------------------------

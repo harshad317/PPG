@@ -2,21 +2,21 @@
 External prompt-optimizer baselines for PPG evaluation.
 
 MIPROv2Baseline  — wraps DSPy MIPROv2 (Bayesian instruction + few-shot tuning)
-GEPABaseline     — wraps GEPA optimize_anything (evolutionary trace-based search)
+GEPABaseline     — wraps DSPy GEPA (generative evolutionary prompt adaptation)
 
 Both expose the same two-phase interface used by EvalHarness:
     baseline.compile(trainset, ...)   # optimize prompt offline
     baseline.run(example)             # -> (response: str, tokens: int)
 
+Both require dspy.configure(lm=...) to be called before compile().
+
 Installation
 ------------
-MIPROv2 : pip install dspy-ai
-GEPA    : pip install gepa   (or: pip install git+https://github.com/gepa-ai/gepa.git)
+pip install dspy-ai
 """
 
 from __future__ import annotations
 
-import random
 from typing import Optional
 
 from ppg.eval.harness import EvalExample
@@ -35,14 +35,14 @@ class MIPROv2Baseline:
 
     MIPROv2 performs Bayesian search over instruction candidates and few-shot
     example orderings for a DSPy program. For PPG comparison the "program" is
-    a single Predict node whose initial instructions are the seed_prompt
+    a single Predict node whose initial instructions are the seed_instructions
     (e.g. the flat_all assembled prompt). MIPROv2 then optimises those
     instructions on the trainset.
 
     Parameters
     ----------
-    metric        : TaskMetric — used inside the DSPy metric function
-    auto          : MIPROv2 search budget ("light" | "medium" | "heavy")
+    metric : TaskMetric — used inside the DSPy metric function
+    auto   : MIPROv2 search budget ("light" | "medium" | "heavy")
 
     Usage
     -----
@@ -83,10 +83,10 @@ class MIPROv2Baseline:
         metric: TaskMetric,
         auto:   str = "medium",
     ):
-        self._metric         = metric
-        self._auto           = auto
-        self._program        = None   # set by compile()
-        self._prompt_prefix  = ""    # optimized instructions extracted after compile()
+        self._metric        = metric
+        self._auto          = auto
+        self._program       = None   # set by compile()
+        self._prompt_prefix = ""     # optimized instructions extracted after compile()
 
     # ------------------------------------------------------------------
 
@@ -139,9 +139,8 @@ class MIPROv2Baseline:
         class _PPGModule(dspy.Module):
             def __init__(self):
                 super().__init__()
-                sig = dspy.Signature("input -> response")
-                if instructions:
-                    sig = sig.with_instructions(instructions)
+                sig = dspy.Signature("input -> response", instructions=instructions) \
+                    if instructions else dspy.Signature("input -> response")
                 self.predict = dspy.Predict(sig)
 
             def forward(self, input):
@@ -153,26 +152,19 @@ class MIPROv2Baseline:
             compile_kwargs["valset"] = dspy_val
         self._program = optimizer.compile(_PPGModule(), **compile_kwargs)
 
-        # Extract optimized instructions for fair prompt-token accounting in run().
-        # DSPy stores them on the compiled predict's signature; fall back to seed.
         try:
             self._prompt_prefix = self._program.predict.signature.instructions or seed_instructions
         except AttributeError:
             self._prompt_prefix = seed_instructions
 
     def run(self, example: EvalExample) -> tuple[str, int]:
-        """Return (response, prompt_token_count) for one example.
-
-        Token count covers the estimated prompt sent to the LM (optimized
-        instructions + input), matching how all other baselines count tokens.
-        Response tokens are excluded to keep accounting comparable.
-        """
+        """Return (response, prompt_token_count) for one example."""
         if self._program is None:
             raise RuntimeError("Call compile() before run()")
         pred     = self._program(input=example.x)
         response = getattr(pred, "response", str(pred))
         from ppg.core.tokenizer import count_tokens
-        proxy    = f"{self._prompt_prefix}\n\nInput: {example.x}" if self._prompt_prefix else f"Input: {example.x}"
+        proxy = f"{self._prompt_prefix}\n\nInput: {example.x}" if self._prompt_prefix else f"Input: {example.x}"
         return response, count_tokens(proxy)
 
 
@@ -182,176 +174,181 @@ class MIPROv2Baseline:
 
 class GEPABaseline:
     """
-    GEPA (Generative Evolutionary Prompt Adaptation) baseline.
+    GEPA (Generative Evolutionary Prompt Adaptation) baseline using DSPy.
 
-    Requires: pip install gepa
-    GitHub  : https://github.com/gepa-ai/gepa
+    Requires: pip install dspy-ai
+    GitHub  : https://github.com/stanfordnlp/dspy
 
-    Uses gepa.optimize_anything() — the evaluator receives a candidate prompt
-    string, runs it against a mini-batch of training examples via lm_client,
-    and returns the mean task score. GEPA's reflection LM reads the logged
-    traces to diagnose failures and propose improvements.
+    Uses dspy.teleprompt.GEPA — a DSPy teleprompter that evolves prompt
+    instructions via a reflection LM reading scored feedback traces.
+    The metric must return (score, feedback_str) to enable GEPA's reflection
+    loop; GEPABaseline wraps the plain TaskMetric and generates feedback text.
 
     Parameters
     ----------
-    metric           : TaskMetric — used inside the evaluator to score responses
-    lm_client        : LMClient — used for task inference inside evaluator and
-                       for final run() inference after optimisation
-    reflection_lm    : model identifier for GEPA's reflection LM
-                       (e.g. "openai/gpt-4o", "anthropic/claude-opus-4-7")
+    metric           : TaskMetric — scores (response, y_star) pairs
+    reflection_lm    : DSPy LM object or model string used for GEPA reflection
+                       (e.g. dspy.LM("openai/gpt-4o") or "openai/gpt-4o");
+                       defaults to the globally configured DSPy LM when None
     max_metric_calls : GEPA evaluation budget (total evaluator calls)
-    n_eval_examples  : examples per evaluator call; trades cost vs. signal
-    seed             : RNG seed for reproducible mini-batch sampling
+    seed             : RNG seed for reproducible optimisation
 
     Usage
     -----
+        lm = dspy.LM("openai/gpt-4o-mini")
+        dspy.configure(lm=lm)
+
         baseline = GEPABaseline(
             metric=ExactMatchMetric(),
-            lm_client=my_lm,
-            reflection_lm="openai/gpt-4o",
+            reflection_lm=dspy.LM("openai/gpt-4o"),
         )
         baseline.compile(
             trainset=train_examples,
             valset=val_examples,
-            seed_prompt=flat_prompt,
-            objective="Maximize exact-match accuracy on math word problems.",
+            seed_instructions=flat_prompt,
         )
         response, tokens = baseline.run(test_example)
     """
 
-    def __init__(
-        self,
-        metric:           TaskMetric,
-        lm_client,
-        reflection_lm:    str = "openai/gpt-4o",
-        max_metric_calls: int = 150,
-        n_eval_examples:  int = 20,
-        seed:             int = 42,
-    ):
-        self._metric           = metric
-        self._lm               = lm_client
-        self._reflection_lm    = reflection_lm
-        self._max_metric_calls = max_metric_calls
-        self._n_eval           = n_eval_examples
-        self._rng              = random.Random(seed)
-        self._optimized_prompt: Optional[str] = None
-
     @classmethod
     def verify(cls) -> dict:
         """
-        Check GEPA availability before calling compile().
+        Check DSPy + GEPA availability before calling compile().
 
         Returns dict with keys:
-          available         : bool
-          has_optimize_fn   : bool (if available)
-          error             : str (if not available)
+          available : bool
+          version   : str (if available)
+          has_gepa  : bool (if available)
+          error     : str (if not available)
         """
         try:
-            import gepa.optimize_anything as oa
+            import dspy
+            from dspy.teleprompt import GEPA  # noqa: F401
             return {
-                "available":        True,
-                "has_optimize_fn":  hasattr(oa, "optimize_anything"),
+                "available": True,
+                "version":   getattr(dspy, "__version__", "unknown"),
+                "has_gepa":  True,
             }
-        except ImportError:
+        except ImportError as exc:
             return {
                 "available": False,
-                "error": (
-                    "gepa not installed: pip install gepa  "
-                    "or: pip install git+https://github.com/gepa-ai/gepa.git"
-                ),
+                "error":     f"dspy-ai not installed or missing GEPA: pip install dspy-ai ({exc})",
             }
+        except AttributeError:
+            try:
+                import dspy
+                return {
+                    "available": True,
+                    "version":   getattr(dspy, "__version__", "unknown"),
+                    "has_gepa":  False,
+                }
+            except ImportError:
+                return {"available": False, "error": "dspy-ai not installed: pip install dspy-ai"}
 
     # ------------------------------------------------------------------
 
+    def __init__(
+        self,
+        metric:           TaskMetric,
+        reflection_lm:    object = None,
+        max_metric_calls: int = 150,
+        seed:             int = 42,
+    ):
+        self._metric           = metric
+        self._reflection_lm    = reflection_lm
+        self._max_metric_calls = max_metric_calls
+        self._seed             = seed
+        self._program: Optional[object] = None
+        self._prompt_prefix:  str = ""
+
     def compile(
         self,
-        trainset:  list,
-        valset:    list,
-        seed_prompt: str,
-        objective: str = "Optimize this prompt to maximize task accuracy.",
+        trainset:          list,
+        valset:            list = (),
+        seed_instructions: str = "",
     ) -> None:
         """
-        Run GEPA optimisation.
+        Run GEPA optimisation on trainset.
+
+        Expects dspy.configure(lm=...) already called before this.
 
         Parameters
         ----------
-        trainset    : training examples (TrainingExample or EvalExample);
-                      used as fallback eval pool when valset is empty
-        valset      : validation examples; the evaluator samples from this set
-                      (not trainset) to give GEPA unbiased candidate scores,
-                      matching gepa.optimize()'s intended train/val split
-        seed_prompt : starting prompt text; GEPA mutates this
-        objective   : natural-language description of optimisation goal
+        trainset          : training examples (TrainingExample or EvalExample)
+        valset            : validation examples for candidate selection
+        seed_instructions : initial prompt text; GEPA will evolve this
         """
         try:
-            import gepa.optimize_anything as oa
-            from gepa.optimize_anything import GEPAConfig, EngineConfig, optimize_anything
+            import dspy
+            from dspy.teleprompt import GEPA
         except ImportError:
             raise ImportError(
-                "GEPA required: pip install gepa  "
-                "or: pip install git+https://github.com/gepa-ai/gepa.git"
+                "DSPy required for GEPABaseline: pip install dspy-ai"
             ) from None
+
+        metric       = self._metric
+        instructions = seed_instructions
+
+        dspy_train = [
+            dspy.Example(input=ex.x, y_star=ex.y_star).with_inputs("input")
+            for ex in trainset
+        ]
+        dspy_val = [
+            dspy.Example(input=ex.x, y_star=ex.y_star).with_inputs("input")
+            for ex in valset
+        ] if valset else None
+
+        def gepa_metric(example, prediction, trace=None):
+            """Return (score, feedback) — the feedback string drives GEPA reflection."""
+            try:
+                response = getattr(prediction, "response", str(prediction))
+                score    = float(metric.score(response, example.y_star))
+            except Exception:
+                response = ""
+                score    = 0.0
+            feedback = (
+                f"Expected: {str(example.y_star)[:300]!r}\n"
+                f"Got:      {str(response)[:300]!r}\n"
+                f"Score:    {score:.3f}"
+            )
+            return score, feedback
+
+        class _PPGModule(dspy.Module):
+            def __init__(self):
+                super().__init__()
+                sig = dspy.Signature("input -> response", instructions=instructions) \
+                    if instructions else dspy.Signature("input -> response")
+                self.predict = dspy.Predict(sig)
+
+            def forward(self, input):
+                return self.predict(input=input)
+
+        gepa_kwargs: dict = {
+            "metric":           gepa_metric,
+            "max_metric_calls": self._max_metric_calls,
+            "seed":             self._seed,
+        }
+        if self._reflection_lm is not None:
+            gepa_kwargs["reflection_lm"] = self._reflection_lm
+
+        optimizer = GEPA(**gepa_kwargs)
+
+        compile_kwargs = {"trainset": dspy_train}
+        if dspy_val is not None:
+            compile_kwargs["valset"] = dspy_val
+        self._program = optimizer.compile(_PPGModule(), **compile_kwargs)
+
         try:
-            from gepa.optimize_anything import ReflectionConfig
-        except ImportError:
-            ReflectionConfig = None
-
-        metric    = self._metric
-        lm        = self._lm
-        n_eval    = self._n_eval
-        eval_pool = list(valset) if valset else list(trainset)
-        rng       = self._rng
-
-        def evaluator(candidate: str) -> float:
-            batch = rng.sample(eval_pool, min(n_eval, len(eval_pool)))
-            scores: list[float] = []
-            for ex in batch:
-                prompt = f"{candidate}\n\nInput: {ex.x}"
-                try:
-                    response = lm.complete(prompt)
-                    oa.log(f"Input: {ex.x[:120]}")
-                    oa.log(f"Output: {response[:200]}")
-                    scores.append(metric.score(response, ex.y_star))
-                except Exception as e:
-                    oa.log(f"Error: {e}")
-                    scores.append(0.0)
-            return float(sum(scores) / len(scores)) if scores else 0.0
-
-        if ReflectionConfig is not None:
-            config = GEPAConfig(
-                engine=EngineConfig(max_metric_calls=self._max_metric_calls),
-                reflection=ReflectionConfig(reflection_lm=self._reflection_lm),
-            )
-        else:
-            # Older GEPA releases stored reflection_lm on EngineConfig.
-            config = GEPAConfig(
-                engine=EngineConfig(
-                    max_metric_calls=self._max_metric_calls,
-                    reflection_lm=self._reflection_lm,
-                )
-            )
-
-        result = optimize_anything(
-            seed_candidate=seed_prompt,
-            evaluator=evaluator,
-            objective=objective,
-            config=config,
-        )
-
-        bc = result.best_candidate
-        if isinstance(bc, str):
-            self._optimized_prompt = bc
-        elif isinstance(bc, dict):
-            # gepa.optimize() style: {"system_prompt": ...}
-            self._optimized_prompt = bc.get("system_prompt", str(bc))
-        else:
-            self._optimized_prompt = str(bc)
+            self._prompt_prefix = self._program.predict.signature.instructions or seed_instructions
+        except AttributeError:
+            self._prompt_prefix = seed_instructions
 
     def run(self, example: EvalExample) -> tuple[str, int]:
-        """Return (response, token_count) for one example."""
-        if self._optimized_prompt is None:
+        """Return (response, prompt_token_count) for one example."""
+        if self._program is None:
             raise RuntimeError("Call compile() before run()")
+        pred     = self._program(input=example.x)
+        response = getattr(pred, "response", str(pred))
         from ppg.core.tokenizer import count_tokens
-        prompt   = f"{self._optimized_prompt}\n\nInput: {example.x}"
-        response = self._lm.complete(prompt)
-        return response, count_tokens(prompt)
+        proxy = f"{self._prompt_prefix}\n\nInput: {example.x}" if self._prompt_prefix else f"Input: {example.x}"
+        return response, count_tokens(proxy)
