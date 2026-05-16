@@ -482,8 +482,8 @@ class IFBenchLoader:
                 x=row["instruction"],
                 y_star=row["chosen"]["content"],
                 constraints=(
-                    [str(c) for c in row.get("llm_constraints_used", []) or []]
-                    + [str(c) for c in row.get("code_constraints_used", []) or []]
+                    [c["constraint"] for c in row.get("llm_constraints_used", []) or [] if isinstance(c, dict) and "constraint" in c]
+                    + [c["constraint"] for c in row.get("code_constraints_used", []) or [] if isinstance(c, dict) and "constraint" in c]
                 ),
             )
             for row in rows
