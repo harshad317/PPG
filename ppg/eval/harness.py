@@ -186,6 +186,12 @@ class EvalConfig:
     # Progress display
     show_progress: bool = True
 
+    # Print a markdown summary table after each method finishes evaluating.
+    show_method_tables: bool = True
+
+    # Name of the split being evaluated (shown in per-method tables).
+    split_name: str = "test"
+
     # Parallel eval workers — LM calls are I/O-bound so threads scale well.
     n_workers: int = 1
 
@@ -320,11 +326,27 @@ class EvalHarness:
             raise ValueError("examples must be non-empty")
 
         ppg_metrics  = self._run_ppg(examples)
+        self._print_method_table("ppg", ppg_metrics)
+
         base_metrics = {}
         for name in self._cfg.baselines:
-            base_metrics[name] = self._run_baseline(name, examples)
+            m = self._run_baseline(name, examples)
+            base_metrics[name] = m
+            self._print_method_table(name, m)
 
         return EvalReport(ppg=ppg_metrics, baselines=base_metrics)
+
+    def _print_method_table(self, name: str, m: "BaselineMetrics") -> None:
+        """Print a markdown summary table for one method after its eval run."""
+        if not self._cfg.show_method_tables:
+            return
+        split = self._cfg.split_name
+        sep   = "|---------|-------|---------|---------|-----------|"
+        print(f"\n  {name}")
+        print(f"  | Split   | Score | StdDev  | AvgTok  | API calls |")
+        print(f"  {sep}")
+        print(f"  | {split:<7} | {m.task_accuracy:.3f} | {m.std_task:.3f}   "
+              f"| {m.mean_tokens:>7.1f} | {m.lm_calls:>9} |")
 
     # ------------------------------------------------------------------
     # Parallel execution core
