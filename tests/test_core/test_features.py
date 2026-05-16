@@ -103,14 +103,16 @@ class TestRuntimeFeatures:
     def test_unknown_cluster_all_zero_onehot(self):
         f = RuntimeFeatures(embed_cluster=-1)
         v = f.as_vector()
-        cluster_slice = v[6:]   # embed_cluster_0..3
+        cluster_start = FEATURE_NAMES.index("embed_cluster_0")
+        cluster_slice = v[cluster_start:]
         assert np.all(cluster_slice == 0.0)
 
     def test_valid_cluster_one_hot(self):
+        cluster_start = FEATURE_NAMES.index("embed_cluster_0")
         for c in range(N_CLUSTERS):
             f = RuntimeFeatures(embed_cluster=c)
             v = f.as_vector()
-            cluster_slice = v[6:]
+            cluster_slice = v[cluster_start:]
             expected = np.zeros(N_CLUSTERS)
             expected[c] = 1.0
             assert np.allclose(cluster_slice, expected)
