@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -165,6 +166,7 @@ class DiskCachedLMClient:
         self._lm         = lm
         self._cache_path = cache_path
         self._cache:  Optional[dict[str, str]] = None  # lazy load
+        self._lock   = threading.Lock()   # guards cache dict + disk flush
 
         # Diagnostics
         self._n_hits:  int = 0
@@ -177,13 +179,24 @@ class DiskCachedLMClient:
     def complete(self, prompt: str) -> str:
         self._ensure_loaded()
         key = self._hash(prompt)
-        if key in self._cache:
-            self._n_hits += 1
-            return self._cache[key]
+
+        with self._lock:
+            if key in self._cache:
+                self._n_hits += 1
+                return self._cache[key]
+
+        # LM call outside lock — allows concurrent in-flight calls for distinct prompts
         response = self._lm.complete(prompt)
-        self._cache[key] = response
-        self._n_misses += 1
-        self._flush()
+
+        with self._lock:
+            # Re-check: another thread may have populated same key concurrently
+            if key not in self._cache:
+                self._cache[key] = response
+                self._n_misses += 1
+                self._flush()
+            else:
+                self._n_hits += 1  # concurrent hit
+
         return response
 
     # ------------------------------------------------------------------

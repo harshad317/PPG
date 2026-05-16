@@ -18,6 +18,13 @@ Dataset cycling
     If total episodes > len(dataset), examples cycle with a shuffle each
     epoch so no fixed ordering bias.
 
+Parallelism (n_workers > 1)
+    Episode collection (executor.execute + reward.compute) is I/O-bound —
+    LM API calls release the GIL, so threads scale well up to API rate limits.
+    Mini-batches of n_workers episodes are collected concurrently; policy
+    updates and credit assignment remain strictly sequential to preserve
+    the online learning invariant.
+
 Checkpointing
     Policy saved every checkpoint_every episodes when checkpoint_dir is set.
 """
@@ -26,22 +33,12 @@ from __future__ import annotations
 
 import os
 import random
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import numpy as np
-
-
-def _make_bar(iterable, *, desc: str, enabled: bool, total: int, **kwargs):
-    """Wrap iterable with tqdm if enabled. Raises ImportError if tqdm missing."""
-    try:
-        from tqdm import tqdm
-    except ImportError:
-        if enabled:
-            raise ImportError("tqdm required for progress display: pip install tqdm") from None
-        return iterable
-    return tqdm(iterable, desc=desc, total=total, disable=not enabled,
-                unit="ep", ncols=100, leave=True, **kwargs)
 
 from ppg.bandits.linucb import LinUCBPolicy
 from ppg.core.executor import PPGExecutor, RandomSelector
@@ -95,6 +92,12 @@ class TrainerConfig:
 
     # Progress display
     show_progress: bool = True
+
+    # Parallelism — concurrent episode collection via ThreadPoolExecutor.
+    # LM API calls are I/O-bound so threads scale well up to API rate limits.
+    # Policy updates and credit assignment remain sequential.
+    # Set to os.cpu_count() to saturate available cores.
+    n_workers: int = 1
 
 
 # ---------------------------------------------------------------------------
@@ -232,16 +235,8 @@ class PPGTrainer:
         original_p = self.credit.cfg.p_ablate
         self.credit.cfg.p_ablate = self.cfg.p_ablate_warmup
 
-        cycle = self._make_cycle(dataset, self.cfg.n_warmup_episodes)
-        bar = _make_bar(cycle, desc="warmup  ", enabled=self.cfg.show_progress,
-                        total=self.cfg.n_warmup_episodes)
-        run_r = run_t = 0.0
-        for i, example in enumerate(bar):
-            result = self._run_episode(example, phase="warmup", train_mode=False)
-            run_r  = (run_r * i + result.reward.total) / (i + 1)
-            run_t  = (run_t * i + result.reward.task)  / (i + 1)
-            if self.cfg.show_progress and hasattr(bar, "set_postfix"):
-                bar.set_postfix(reward=f"{run_r:.3f}", task=f"{run_t:.2f}")
+        self._run_phase(dataset, self.cfg.n_warmup_episodes,
+                        phase="warmup", train_mode=False, desc="warmup  ")
 
         self.executor.selector = original_selector
         self.credit.cfg.p_ablate = original_p
@@ -254,16 +249,8 @@ class PPGTrainer:
         original_p = self.credit.cfg.p_ablate
         self.credit.cfg.p_ablate = self.cfg.p_ablate_train
 
-        cycle = self._make_cycle(dataset, self.cfg.n_train_episodes)
-        bar = _make_bar(cycle, desc="train   ", enabled=self.cfg.show_progress,
-                        total=self.cfg.n_train_episodes)
-        run_r = run_t = 0.0
-        for i, example in enumerate(bar):
-            result = self._run_episode(example, phase="train", train_mode=True)
-            run_r  = (run_r * i + result.reward.total) / (i + 1)
-            run_t  = (run_t * i + result.reward.task)  / (i + 1)
-            if self.cfg.show_progress and hasattr(bar, "set_postfix"):
-                bar.set_postfix(reward=f"{run_r:.3f}", task=f"{run_t:.2f}")
+        self._run_phase(dataset, self.cfg.n_train_episodes,
+                        phase="train", train_mode=True, desc="train   ")
 
         self.policy.alpha = original_alpha
         self.credit.cfg.p_ablate = original_p
@@ -276,42 +263,124 @@ class PPGTrainer:
         original_p = self.credit.cfg.p_ablate
         self.credit.cfg.p_ablate = self.cfg.p_ablate_finetune
 
-        cycle = self._make_cycle(dataset, self.cfg.n_finetune_episodes)
-        bar = _make_bar(cycle, desc="finetune", enabled=self.cfg.show_progress,
-                        total=self.cfg.n_finetune_episodes)
-        run_r = run_t = 0.0
-        for i, example in enumerate(bar):
-            result = self._run_episode(example, phase="finetune", train_mode=True)
-            run_r  = (run_r * i + result.reward.total) / (i + 1)
-            run_t  = (run_t * i + result.reward.task)  / (i + 1)
-            if self.cfg.show_progress and hasattr(bar, "set_postfix"):
-                bar.set_postfix(reward=f"{run_r:.3f}", task=f"{run_t:.2f}")
+        self._run_phase(dataset, self.cfg.n_finetune_episodes,
+                        phase="finetune", train_mode=True, desc="finetune")
 
         self.policy.alpha = original_alpha
         self.credit.cfg.p_ablate = original_p
 
     # ------------------------------------------------------------------
-    # Core episode loop
+    # Core phase dispatcher
     # ------------------------------------------------------------------
 
-    def _run_episode(
+    def _run_phase(
         self,
-        example:    TrainingExample,
+        dataset:    list[TrainingExample],
+        n_episodes: int,
         phase:      str,
         train_mode: bool,
-    ) -> EpisodeResult:
-        # Execute path through graph
-        trace = self.executor.execute(example.x, train_mode=train_mode)
+        desc:       str,
+    ) -> None:
+        """Run n_episodes for one phase, sequential or parallel based on n_workers."""
+        if n_episodes == 0:
+            return
 
-        # Compute reward
+        cycle = self._make_cycle(dataset, n_episodes)
+
+        if self.cfg.n_workers <= 1:
+            self._run_phase_sequential(cycle, phase, train_mode, desc, n_episodes)
+        else:
+            self._run_phase_parallel(cycle, phase, train_mode, desc, n_episodes)
+
+    def _run_phase_sequential(
+        self,
+        cycle:      list[TrainingExample],
+        phase:      str,
+        train_mode: bool,
+        desc:       str,
+        total:      int,
+    ) -> None:
+        bar = _make_bar(cycle, desc=desc, enabled=self.cfg.show_progress, total=total)
+        run_r = run_t = 0.0
+        for i, example in enumerate(bar):
+            result = self._run_episode(example, phase=phase, train_mode=train_mode)
+            run_r  = (run_r * i + result.reward.total) / (i + 1)
+            run_t  = (run_t * i + result.reward.task)  / (i + 1)
+            if self.cfg.show_progress and hasattr(bar, "set_postfix"):
+                bar.set_postfix(reward=f"{run_r:.3f}", task=f"{run_t:.2f}")
+
+    def _run_phase_parallel(
+        self,
+        cycle:      list[TrainingExample],
+        phase:      str,
+        train_mode: bool,
+        desc:       str,
+        total:      int,
+    ) -> None:
+        """
+        Mini-batch parallel episode collection.
+
+        n_workers episodes are collected concurrently (I/O-bound LM calls);
+        their policy updates and stats recording are applied sequentially
+        in submission order to preserve the online learning trajectory.
+        """
+        bar = _make_bar_manual(desc=desc, enabled=self.cfg.show_progress, total=total)
+        run_r = run_t = 0.0
+        episode_i = 0
+        batch_size = self.cfg.n_workers
+
+        with ThreadPoolExecutor(max_workers=batch_size) as pool:
+            # Slice cycle into mini-batches
+            for batch_start in range(0, len(cycle), batch_size):
+                batch = cycle[batch_start:batch_start + batch_size]
+
+                # Submit all collections in this batch concurrently
+                futures = [
+                    pool.submit(self._collect, ex, train_mode)
+                    for ex in batch
+                ]
+
+                # Wait in submission order so updates are deterministic
+                for example, future in zip(batch, futures):
+                    trace, reward_components = future.result()
+                    result = self._apply_update(
+                        trace, reward_components, example, phase
+                    )
+                    run_r = (run_r * episode_i + result.reward.total) / (episode_i + 1)
+                    run_t = (run_t * episode_i + result.reward.task)  / (episode_i + 1)
+                    episode_i += 1
+                    _bar_update(bar, reward=f"{run_r:.3f}", task=f"{run_t:.2f}",
+                                enabled=self.cfg.show_progress)
+
+        _bar_close(bar, enabled=self.cfg.show_progress)
+
+    # ------------------------------------------------------------------
+    # Episode building blocks
+    # ------------------------------------------------------------------
+
+    def _collect(
+        self,
+        example:    TrainingExample,
+        train_mode: bool,
+    ) -> tuple:
+        """Execute path + compute reward. I/O-bound; safe to run concurrently."""
+        trace = self.executor.execute(example.x, train_mode=train_mode)
         reward_components = self.reward.compute(
             trace=trace,
             x=example.x,
             y_star=example.y_star,
             constraints=example.constraints or None,
         )
+        return trace, reward_components
 
-        # Update policy with total reward signal (skip for no_bandit ablation)
+    def _apply_update(
+        self,
+        trace,
+        reward_components: RewardComponents,
+        example:           TrainingExample,
+        phase:             str,
+    ) -> EpisodeResult:
+        """Policy update + credit assignment + stats. Must run sequentially."""
         phi = trace.pre_lm_features.as_vector()
         if self._train_policy:
             self.policy.update_path(
@@ -320,7 +389,6 @@ class PPGTrainer:
                 reward_components.total,
             )
 
-        # LOO credit assignment (probabilistic)
         credit_result = self.credit.maybe_assign(
             trace=trace,
             graph=self.executor.graph,
@@ -348,6 +416,15 @@ class PPGTrainer:
 
         return result
 
+    def _run_episode(
+        self,
+        example:    TrainingExample,
+        phase:      str,
+        train_mode: bool,
+    ) -> EpisodeResult:
+        trace, reward_components = self._collect(example, train_mode)
+        return self._apply_update(trace, reward_components, example, phase)
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -357,10 +434,7 @@ class PPGTrainer:
         dataset: list[TrainingExample],
         n: int,
     ) -> list[TrainingExample]:
-        """
-        Return exactly n examples by cycling through dataset with
-        per-epoch shuffling.
-        """
+        """Return exactly n examples by cycling through dataset with per-epoch shuffling."""
         if n == 0:
             return []
         shuffled = list(dataset)
@@ -382,3 +456,41 @@ class PPGTrainer:
             f"policy_{phase}_ep{self._episode:06d}.npz",
         )
         self.policy.save(path)
+
+
+# ---------------------------------------------------------------------------
+# Progress bar helpers
+# ---------------------------------------------------------------------------
+
+def _make_bar(iterable, *, desc: str, enabled: bool, total: int, **kwargs):
+    """Wrap iterable with tqdm if enabled."""
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        if enabled:
+            raise ImportError("tqdm required for progress display: pip install tqdm") from None
+        return iterable
+    return tqdm(iterable, desc=desc, total=total, disable=not enabled,
+                unit="ep", ncols=100, leave=True, **kwargs)
+
+
+def _make_bar_manual(*, desc: str, enabled: bool, total: int):
+    """Create a manual-update tqdm bar (no iterable)."""
+    if not enabled:
+        return None
+    try:
+        from tqdm import tqdm
+        return tqdm(total=total, desc=desc, unit="ep", ncols=100, leave=True)
+    except ImportError:
+        return None
+
+
+def _bar_update(bar, *, reward: str, task: str, enabled: bool) -> None:
+    if bar is not None and enabled:
+        bar.update(1)
+        bar.set_postfix(reward=reward, task=task)
+
+
+def _bar_close(bar, *, enabled: bool) -> None:
+    if bar is not None and enabled:
+        bar.close()

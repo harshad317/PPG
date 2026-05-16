@@ -360,6 +360,9 @@ def main():
                         help="Directory to write JSON results (default: results/)")
     parser.add_argument("--checkpoint-dir", default=None, dest="checkpoint_dir",
                         help="Save policy checkpoints here during training")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Parallel episode workers for PPG training (default: 1; "
+                             "set to os.cpu_count() for max throughput)")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress tqdm/rich progress bars")
     args = parser.parse_args()
@@ -442,6 +445,7 @@ def main():
             n_finetune_episodes=args.finetune,
             checkpoint_dir=args.checkpoint_dir,
             show_progress=show_progress,
+            n_workers=args.workers,
         ),
     )
 

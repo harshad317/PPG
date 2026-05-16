@@ -409,17 +409,28 @@ class RewardComputer:
         Each perturbed input uses the same path (frozen topology) so we only
         vary the prompt context, not the routing. This isolates prompt
         robustness rather than routing robustness.
+
+        Perturbation LM calls are fired concurrently via ThreadPoolExecutor
+        (I/O-bound; GIL released during network wait).
         """
+        from concurrent.futures import ThreadPoolExecutor
+
         perturbed_inputs = self.buffer.get(x, m=self.cfg.m_perturbation)
         if len(perturbed_inputs) < 2:
             return 0.0
 
-        scores: list[float] = []
-        for x_p in perturbed_inputs:
-            ctx_p    = {"input": x_p}
-            prompt_p = self.assembler.assemble(trace.node_ids, ctx_p)
-            y_p      = self.lm.complete(prompt_p)
-            scores.append(self.metric.score(y_p, y_star))
+        node_ids = trace.node_ids
+        assembler = self.assembler
+        lm = self.lm
+        metric = self.metric
+
+        def _score(x_p: str) -> float:
+            prompt_p = assembler.assemble(node_ids, {"input": x_p})
+            y_p      = lm.complete(prompt_p)
+            return metric.score(y_p, y_star)
+
+        with ThreadPoolExecutor(max_workers=len(perturbed_inputs)) as pool:
+            scores = list(pool.map(_score, perturbed_inputs))
 
         var = float(np.var(scores))
         return -self.cfg.lambda_variance * var
