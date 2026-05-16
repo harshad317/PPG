@@ -271,10 +271,12 @@ class TestBuildGraphRich:
         assert FragmentType.DOMAIN_PRIMER in types
 
     @pytest.mark.parametrize("bm", BENCHMARKS)
-    def test_rich_single_terminal(self, bm):
-        """Both branches (reasoning and compression) converge to one OUTPUT_CONTRACT."""
+    def test_rich_terminals_are_output_contracts(self, bm):
+        """All terminal nodes in the rich graph are OUTPUT_CONTRACT variants."""
         g = build_graph(bm, topology="rich")
-        assert len(g.terminal_ids) == 1
+        assert len(g.terminal_ids) >= 1
+        for tid in g.terminal_ids:
+            assert g.nodes[tid].type == FragmentType.OUTPUT_CONTRACT
 
 
 # ---------------------------------------------------------------------------

@@ -260,9 +260,9 @@ class TestIFEvalLoader:
         from ppg.training.reward import ExactMatchMetric
         assert isinstance(IFEvalLoader.recommended_metric(), ExactMatchMetric)
 
-    def test_recommended_constraint_checker_is_keyword(self):
-        from ppg.training.reward import KeywordConstraintChecker
-        assert isinstance(IFEvalLoader.recommended_constraint_checker(), KeywordConstraintChecker)
+    def test_recommended_constraint_checker_is_official(self):
+        from ppg.training.reward import IFEvalOfficialChecker
+        assert isinstance(IFEvalLoader.recommended_constraint_checker(), IFEvalOfficialChecker)
 
 
 # ---------------------------------------------------------------------------
@@ -534,7 +534,9 @@ IFBENCH_ROWS = [
         "instruction": "Write a haiku about spring. Each line must have exactly 5, 7, 5 syllables.",
         "chosen": {"content": "Cherry blossoms fall\nPetals drift on gentle breeze\nSpring whispers goodbye"},
         "rejected": {"content": "Spring is here today"},
-        "llm_constraints_used": ["syllable_count"],
+        "llm_constraints_used": [
+            {"constraint": "Each line must have exactly 5, 7, 5 syllables.", "type": "Length"},
+        ],
         "code_constraints_used": [],
     },
     {
@@ -542,7 +544,9 @@ IFBENCH_ROWS = [
         "instruction": "List 3 fruits alphabetically.",
         "chosen": {"content": "Apple\nBanana\nCherry"},
         "rejected": {"content": "Banana, Cherry, Apple"},
-        "llm_constraints_used": ["ordering"],
+        "llm_constraints_used": [
+            {"constraint": "List the fruits in alphabetical order.", "type": "Format"},
+        ],
         "code_constraints_used": [],
     },
 ]
@@ -695,20 +699,20 @@ class TestIFBenchLoader:
         assert len(examples) == 1
 
     def test_constraints_populated(self):
-        """IFBench constraints should be populated from llm/code_constraints_used."""
+        """IFBench constraints extracted from constraint dicts in llm_constraints_used."""
         with mock_load_dataset(IFBENCH_ROWS):
             examples = IFBenchLoader().load()
-        # First row has llm_constraints_used=["syllable_count"], code_constraints_used=[]
         assert len(examples[0].constraints) >= 1
-        assert "syllable_count" in examples[0].constraints
+        assert "syllable" in examples[0].constraints[0].lower()
+        assert len(examples[0].metadata["constraint_objects"]) >= 1
 
     def test_recommended_metric_is_exact_match(self):
         from ppg.training.reward import ExactMatchMetric
         assert isinstance(IFBenchLoader.recommended_metric(), ExactMatchMetric)
 
-    def test_recommended_constraint_checker_is_keyword(self):
-        from ppg.training.reward import KeywordConstraintChecker
-        assert isinstance(IFBenchLoader.recommended_constraint_checker(), KeywordConstraintChecker)
+    def test_recommended_constraint_checker_is_ifbench(self):
+        from ppg.training.reward import IFBenchConstraintChecker
+        assert isinstance(IFBenchLoader.recommended_constraint_checker(), IFBenchConstraintChecker)
 
 
 # ---------------------------------------------------------------------------

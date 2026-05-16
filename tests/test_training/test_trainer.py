@@ -200,9 +200,11 @@ class TestTrainerConfig:
         cfg = TrainerConfig()
         assert cfg.n_warmup_episodes   == 200
         assert cfg.n_train_episodes    == 1000
-        assert cfg.n_finetune_episodes == 200
+        assert cfg.n_finetune_episodes == 500
         assert cfg.alpha_train         == pytest.approx(0.5)
         assert cfg.alpha_finetune      == pytest.approx(0.1)
+        assert cfg.p_ablate_train      == pytest.approx(0.20)
+        assert cfg.p_ablate_finetune   == pytest.approx(0.10)
         assert cfg.checkpoint_dir is None
 
     def test_custom(self):

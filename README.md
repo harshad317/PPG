@@ -324,7 +324,7 @@ trainer = PPGTrainer(
     config=TrainerConfig(
         n_warmup_episodes=200,
         n_train_episodes=1000,
-        n_finetune_episodes=200,
+        n_finetune_episodes=500,
         checkpoint_dir="checkpoints/gsm8k",
         show_progress=True,
     ),
@@ -487,6 +487,10 @@ from ppg.eval.external import GEPABaseline, MIPROv2Baseline
 from ppg.eval import EvalConfig, EvalHarness
 
 
+# Confirm packages are available before starting long compile runs.
+print(MIPROv2Baseline.verify())   # {"available": True, "version": "...", "has_miprov2": True}
+print(GEPABaseline.verify())      # {"available": True, "has_optimize_fn": True}
+
 mipro = MIPROv2Baseline(metric=metric, auto="medium")
 mipro.compile(trainset=train_examples, seed_instructions="Solve the task carefully.")
 
@@ -587,7 +591,7 @@ Run linting when `ruff` is installed:
 ruff check .
 ```
 
-The last verified local run before this README update was:
+The last verified local run:
 
 ```text
 642 passed
