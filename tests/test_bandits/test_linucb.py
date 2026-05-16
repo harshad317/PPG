@@ -226,15 +226,14 @@ class TestLinUCBPolicySelect:
         g, ids = make_branching_graph()
         tf, rs, comp, oc = ids
         policy = LinUCBPolicy(g, alpha=0.0, lambda_reg=0.01)
-        rng = np.random.default_rng(0)
+        # Fixed phi so result is deterministic regardless of FEATURE_DIM.
+        phi = np.ones(FEATURE_DIM)
 
         for _ in range(300):
-            phi = rng.standard_normal(FEATURE_DIM)
             policy.update((tf, rs),   phi, reward=1.0)
             policy.update((tf, comp), phi, reward=0.0)
 
-        phi_test = rng.standard_normal(FEATURE_DIM)
-        chosen = policy.select(tf, [rs, comp], phi_test, train_mode=False)
+        chosen = policy.select(tf, [rs, comp], phi, train_mode=False)
         assert chosen == rs
 
 

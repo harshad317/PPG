@@ -26,20 +26,50 @@ import numpy as np
 N_CLUSTERS: int = 4   # number of input-embedding clusters (one-hot width)
 
 FEATURE_NAMES: list[str] = [
-    "input_length_norm",    # tokenized len / max_tokens, clipped to [0, 1]
-    "sc_disagreement",      # 1 - freq(most_common_answer) across k samples
-    "entropy_approx",       # normalised entropy of k-sample answer distribution
-    "verifier_score",       # 0.0 = fail, 1.0 = pass, 0.5 = unknown
-    "tool_success",         # 1.0 if last tool call succeeded, else 0.0
-    "tool_failure",         # 1.0 if last tool call failed, else 0.0
-    "embed_cluster_0",      # one-hot: input cluster id
+    "input_length_norm",        # tokenized len / max_tokens, clipped to [0, 1]
+    "sc_disagreement",          # 1 - freq(most_common_answer) across k samples
+    "entropy_approx",           # normalised entropy of k-sample answer distribution
+    "verifier_score",           # 0.0 = fail, 1.0 = pass, 0.5 = unknown
+    "tool_success",             # 1.0 if last tool call succeeded, else 0.0
+    "tool_failure",             # 1.0 if last tool call failed, else 0.0
+    # Constraint-type indicators (pre-LM, keyword-based)
+    # Gives LinUCB routing signal for instruction-following benchmarks.
+    "has_length_constraint",    # 1.0 if input mentions word/sentence/char count or brevity
+    "has_format_constraint",    # 1.0 if input mentions bullet/list/json/markdown/header
+    "has_keyword_constraint",   # 1.0 if input asks to include/exclude specific words
+    "n_constraints_norm",       # normalised count of constraint signals in input
+    "embed_cluster_0",          # one-hot: input cluster id
     "embed_cluster_1",
     "embed_cluster_2",
     "embed_cluster_3",
 ]
-FEATURE_DIM: int = len(FEATURE_NAMES)   # 10
+FEATURE_DIM: int = len(FEATURE_NAMES)   # 14
 
-assert FEATURE_DIM == 6 + N_CLUSTERS, "Update FEATURE_NAMES or N_CLUSTERS together"
+assert FEATURE_DIM == 10 + N_CLUSTERS, "Update FEATURE_NAMES or N_CLUSTERS together"
+
+# ---------------------------------------------------------------------------
+# Constraint-type detection (keyword-based, used in extract_pre_lm)
+# ---------------------------------------------------------------------------
+
+_LENGTH_PATTERNS = re.compile(
+    r'\b(word[s]?\s+count|word[s]?|sentence[s]?|character[s]?|char[s]?|'
+    r'brief|concise|short|succinct|limit|at\s+least|at\s+most|no\s+more\s+than|'
+    r'fewer\s+than|more\s+than|exactly\s+\d+|within\s+\d+)\b',
+    re.IGNORECASE,
+)
+_FORMAT_PATTERNS = re.compile(
+    r'\b(bullet[s]?|numbered\s+list|json|markdown|header[s]?|bold|italic|'
+    r'table|paragraph[s]?|section[s]?|format|structure|indent|newline|'
+    r'html|xml|csv|code\s+block)\b',
+    re.IGNORECASE,
+)
+_KEYWORD_PATTERNS = re.compile(
+    r'\b(include|mention|use\s+the\s+(word|phrase)|contain|must\s+have|'
+    r'do\s+not\s+(use|mention|include)|avoid|exclude|without\s+using|'
+    r'keyword[s]?|phrase[s]?)\b',
+    re.IGNORECASE,
+)
+_CONSTRAINT_SPLIT = re.compile(r'[;,\.\n]+')
 
 _FEAT_IDX: dict[str, int] = {name: i for i, name in enumerate(FEATURE_NAMES)}
 
@@ -59,13 +89,17 @@ class RuntimeFeatures:
       - no tool call
       - cluster unknown (-1 -> all-zero one-hot)
     """
-    input_length_norm: float = 0.0
-    sc_disagreement:   float = 0.0
-    entropy_approx:    float = 0.0
-    verifier_score:    float = 0.5
-    tool_success:      float = 0.0
-    tool_failure:      float = 0.0
-    embed_cluster:     int   = -1      # -1 = unknown; 0..N_CLUSTERS-1 = valid
+    input_length_norm:      float = 0.0
+    sc_disagreement:        float = 0.0
+    entropy_approx:         float = 0.0
+    verifier_score:         float = 0.5
+    tool_success:           float = 0.0
+    tool_failure:           float = 0.0
+    has_length_constraint:  float = 0.0
+    has_format_constraint:  float = 0.0
+    has_keyword_constraint: float = 0.0
+    n_constraints_norm:     float = 0.0
+    embed_cluster:          int   = -1      # -1 = unknown; 0..N_CLUSTERS-1 = valid
 
     def as_vector(self) -> np.ndarray:
         """Returns a float64 array of shape (FEATURE_DIM,) aligned to FEATURE_NAMES."""
@@ -80,6 +114,10 @@ class RuntimeFeatures:
             self.verifier_score,
             self.tool_success,
             self.tool_failure,
+            self.has_length_constraint,
+            self.has_format_constraint,
+            self.has_keyword_constraint,
+            self.n_constraints_norm,
             *cluster_onehot,
         ], dtype=np.float64)
 
@@ -239,11 +277,15 @@ class FeatureExtractor:
     def pre_lm(self, x: str) -> RuntimeFeatures:
         """
         Features computable before calling the LM.
-        Fills: input_length_norm, embed_cluster.
+        Fills: input_length_norm, constraint-type indicators, embed_cluster.
         All post-LM fields remain at their neutral defaults.
         """
         return RuntimeFeatures(
             input_length_norm=self._length_norm(x),
+            has_length_constraint=float(bool(_LENGTH_PATTERNS.search(x))),
+            has_format_constraint=float(bool(_FORMAT_PATTERNS.search(x))),
+            has_keyword_constraint=float(bool(_KEYWORD_PATTERNS.search(x))),
+            n_constraints_norm=min(1.0, len(_CONSTRAINT_SPLIT.split(x)) / 20.0),
             embed_cluster=self._cluster(x),
         )
 
@@ -274,6 +316,10 @@ class FeatureExtractor:
                            if verifier_score is not None else 0.5,
             tool_success=1.0 if tool_success is True  else 0.0,
             tool_failure=1.0 if tool_success is False else 0.0,
+            has_length_constraint=float(bool(_LENGTH_PATTERNS.search(x))),
+            has_format_constraint=float(bool(_FORMAT_PATTERNS.search(x))),
+            has_keyword_constraint=float(bool(_KEYWORD_PATTERNS.search(x))),
+            n_constraints_norm=min(1.0, len(_CONSTRAINT_SPLIT.split(x)) / 20.0),
             embed_cluster=self._cluster(x),
         )
         return feat
