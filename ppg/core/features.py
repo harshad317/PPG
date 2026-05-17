@@ -236,6 +236,73 @@ class _HashCluster:
         ]
 
 
+class SentenceTransformerCluster:
+    """
+    Embedding-based clustering using sentence-transformers + online KMeans.
+
+    Lazy-loads the sentence-transformer model on first predict() call.
+    Falls back to _HashCluster if sentence-transformers is not installed.
+
+    After accumulating >= min_fit_samples embeddings, fits a MiniBatchKMeans
+    and switches from hash-based to real cluster assignments.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "all-MiniLM-L6-v2",
+        n_clusters: int = N_CLUSTERS,
+        min_fit_samples: int = 50,
+    ):
+        self.model_name = model_name
+        self.n_clusters = n_clusters
+        self.min_fit_samples = min_fit_samples
+        self._model = None
+        self._kmeans = None
+        self._fallback = _HashCluster(n_clusters)
+        self._embedding_buffer: list[np.ndarray] = []
+        self._fitted = False
+
+    def _ensure_model(self):
+        if self._model is not None:
+            return
+        try:
+            from sentence_transformers import SentenceTransformer
+            self._model = SentenceTransformer(self.model_name)
+        except ImportError:
+            self._model = None
+
+    def predict(self, texts: list[str]) -> list[int]:
+        self._ensure_model()
+        if self._model is None:
+            return self._fallback.predict(texts)
+
+        embeddings = self._model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
+        if embeddings.ndim == 1:
+            embeddings = embeddings[None, :]
+
+        if not self._fitted:
+            for emb in embeddings:
+                self._embedding_buffer.append(emb)
+            if len(self._embedding_buffer) >= self.min_fit_samples:
+                self._fit()
+
+        if self._fitted:
+            return [int(c) for c in self._kmeans.predict(embeddings)]
+        return self._fallback.predict(texts)
+
+    def _fit(self):
+        try:
+            from sklearn.cluster import MiniBatchKMeans
+        except ImportError:
+            return
+        X = np.stack(self._embedding_buffer)
+        n = min(self.n_clusters, len(X))
+        self._kmeans = MiniBatchKMeans(n_clusters=n, random_state=0, n_init=3)
+        self._kmeans.fit(X)
+        self._fitted = True
+        self._embedding_buffer.clear()
+
+
 # ---------------------------------------------------------------------------
 # FeatureExtractor
 # ---------------------------------------------------------------------------
@@ -264,11 +331,22 @@ class FeatureExtractor:
     embedder:         Optional[Callable[[str], np.ndarray]] = None
     normalizer:       AnswerNormalizer = field(default=default_normalizer)
 
+    use_semantic_clusters: bool = False
+
     def __post_init__(self):
-        if self.cluster_model is None:
-            self._clusterer = _HashCluster()
-        else:
+        if self.cluster_model is not None:
             self._clusterer = self.cluster_model
+        elif self.use_semantic_clusters:
+            self._clusterer = SentenceTransformerCluster()
+        else:
+            self._clusterer = _HashCluster()
+
+    @classmethod
+    def production(cls, **overrides) -> "FeatureExtractor":
+        """Production config with real sentence-transformer embeddings."""
+        defaults = dict(use_semantic_clusters=True)
+        defaults.update(overrides)
+        return cls(**defaults)
 
     # ------------------------------------------------------------------
     # Public API
@@ -337,9 +415,9 @@ class FeatureExtractor:
         return float(np.clip(tokens / self.max_input_tokens, 0.0, 1.0))
 
     def _cluster(self, text: str) -> int:
-        if isinstance(self._clusterer, _HashCluster):
+        if isinstance(self._clusterer, (_HashCluster, SentenceTransformerCluster)):
             return self._clusterer.predict([text])[0]
-        # Real cluster model: needs embedding
+        # External cluster model: needs embedding
         if self.embedder is None:
             return 0
         emb = self.embedder(text)

@@ -52,6 +52,7 @@ from ppg.core.executor import (
     RandomSelector,
 )
 from ppg.core.graph import PPGraph
+from ppg.logging_utils import NullLogger, PPGLogger
 from ppg.training.reward import ConstraintChecker, TaskMetric
 
 
@@ -315,6 +316,7 @@ class EvalHarness:
         config:              Optional[EvalConfig] = None,
         constraint_checker:  Optional[ConstraintChecker] = None,
         external_baselines:  Optional[dict] = None,
+        logger:              Optional[PPGLogger] = None,
     ):
         self._executor  = executor
         self._metric    = metric
@@ -323,6 +325,7 @@ class EvalHarness:
         self._checker   = constraint_checker
         self._external  = external_baselines or {}
         self._rng       = np.random.default_rng(self._cfg.seed)
+        self._logger    = logger or NullLogger()
 
     # ------------------------------------------------------------------
     # Public API
@@ -337,9 +340,12 @@ class EvalHarness:
             raise ValueError("examples must be non-empty")
 
         ppg_metrics  = self.evaluate_one("ppg", examples)
+        self._logger.log_eval_summary("ppg", ppg_metrics.as_dict())
+
         base_metrics = {}
         for name in self._cfg.baselines:
             base_metrics[name] = self.evaluate_one(name, examples)
+            self._logger.log_eval_summary(name, base_metrics[name].as_dict())
 
         return EvalReport(ppg=ppg_metrics, baselines=base_metrics)
 
@@ -508,18 +514,25 @@ class EvalHarness:
         call_fn:  Callable[[EvalExample], tuple[str, int]],
         desc:     str,
     ) -> tuple[list[float], list[int], list[float]]:
+        method_name = desc.strip().replace("eval ", "").strip()
         bar = _make_eval_bar(examples, desc=desc,
                              enabled=self._cfg.show_progress, total=len(examples))
         scores, tokens, cscores = [], [], []
-        for ex in bar:
+        for i, ex in enumerate(bar):
             response, t = call_fn(ex)
-            scores.append(self._score_example(response, ex))
+            score = self._score_example(response, ex)
+            scores.append(score)
             tokens.append(t)
             c = self._constraint_score(response, ex)
             if c is not None:
                 cscores.append(c)
             if self._cfg.show_progress and hasattr(bar, "set_postfix"):
                 bar.set_postfix(acc=f"{sum(scores)/len(scores):.3f}")
+            self._logger.log_eval_example(
+                method=method_name, idx=i, score=score, tokens=t,
+                input_text=ex.x, prediction=response, reference=ex.y_star,
+                constraint_score=c,
+            )
         return scores, tokens, cscores
 
     # ------------------------------------------------------------------

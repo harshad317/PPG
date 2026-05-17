@@ -592,6 +592,24 @@ class RewardConfig:
     constraint_as_task:   bool  = False   # use constraint score as r_task (IFEval/IFBench)
                                           # when True: r_task = checker.check(); r_constraint=0
 
+    @classmethod
+    def production(cls, **overrides) -> "RewardConfig":
+        """Tuned config for maximum benchmark performance.
+
+        Higher lambda_constraint prioritizes instruction-following.
+        3 perturbations gives tighter variance estimates.
+        max_tokens_ref=1024 matches real prompt lengths on rich graphs.
+        """
+        defaults = dict(
+            lambda_cost=0.002,
+            lambda_variance=0.15,
+            lambda_constraint=0.4,
+            m_perturbation=3,
+            max_tokens_ref=1024,
+        )
+        defaults.update(overrides)
+        return cls(**defaults)
+
 
 # ---------------------------------------------------------------------------
 # RewardComputer
@@ -644,8 +662,12 @@ class RewardComputer:
         constraints : list of constraint strings for r_constraint (IFBench)
         metadata    : example metadata dict passed to constraint checker
         """
-        if self.cfg.constraint_as_task and self.checker is not None:
-            # Constraint-only benchmarks (IFEval, IFBench): constraint satisfaction
+        use_constraint_as_task = self.cfg.constraint_as_task or (
+            self.checker is not None and constraints and self._is_constraint_primary(constraints)
+        )
+
+        if use_constraint_as_task and self.checker is not None:
+            # Constraint-driven benchmarks (IFEval, IFBench): constraint satisfaction
             # IS the task signal. r_task = checker score; r_constraint suppressed
             # to avoid double-counting in the total reward.
             r_task       = self.checker.check(trace.lm_response, constraints or [], metadata)
@@ -683,6 +705,15 @@ class RewardComputer:
     # Internals
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_constraint_primary(constraints: list[str]) -> bool:
+        """Auto-detect whether constraints should be the primary task signal.
+
+        Heuristic: if there are 2+ constraints, this is likely an IF benchmark
+        where constraint satisfaction is more meaningful than string match.
+        """
+        return len(constraints) >= 2
+
     def _cost(self, token_count: int) -> float:
         normalised = token_count / max(1, self.cfg.max_tokens_ref)
         return -self.cfg.lambda_cost * normalised
@@ -715,10 +746,14 @@ class RewardComputer:
         assembler = self.assembler
         lm = self.lm
 
+        use_constraint_as_task = self.cfg.constraint_as_task or (
+            self.checker is not None and constraints and self._is_constraint_primary(constraints)
+        )
+
         def _score(x_p: str) -> float:
             prompt_p = assembler.assemble(node_ids, {"input": x_p})
             y_p      = lm.complete(prompt_p)
-            if self.cfg.constraint_as_task and self.checker is not None:
+            if use_constraint_as_task and self.checker is not None:
                 return self.checker.check(y_p, constraints or [], metadata)
             return self.metric.score(y_p, y_star)
 
@@ -727,3 +762,172 @@ class RewardComputer:
 
         var = float(np.var(scores))
         return -self.cfg.lambda_variance * var
+
+
+# ---------------------------------------------------------------------------
+# Pareto-based reward computation (Phase 2)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ParetoPoint:
+    """One point in objective space, linked back to its path."""
+    objectives: np.ndarray   # [task, constraint, -cost, -variance] — all maximise
+    path_key: str            # "|".join(node_ids) for dedup
+    reward_components: RewardComponents
+
+    def dominates(self, other: "ParetoPoint") -> bool:
+        """True if self >= other on all objectives and > on at least one."""
+        geq = self.objectives >= other.objectives
+        gt  = self.objectives > other.objectives
+        return bool(geq.all() and gt.any())
+
+
+class ParetoArchive:
+    """
+    Maintains a bounded Pareto front of path configurations.
+
+    Used by ParetoRewardComputer to assign dominance-rank rewards instead of
+    using linear scalarization. Eliminates lambda hyperparameters.
+
+    Dominance rank reward:
+      - Points on Pareto front (rank 0): reward = 1.0
+      - Points dominated by k front members: reward = 1.0 / (1 + k)
+      - Crowding distance bonus for diversity on the front
+    """
+
+    def __init__(self, max_size: int = 200):
+        self.max_size = max_size
+        self._archive: list[ParetoPoint] = []
+
+    def add(self, point: ParetoPoint) -> float:
+        """Add point, update front, return dominance-rank reward in [0, 1]."""
+        # Count how many archive members dominate this point
+        dominators = sum(1 for p in self._archive if p.dominates(point))
+
+        # Remove points dominated by the new one
+        self._archive = [p for p in self._archive if not point.dominates(p)]
+        self._archive.append(point)
+
+        # Prune to max_size using crowding distance
+        if len(self._archive) > self.max_size:
+            self._prune()
+
+        # Reward: non-dominated = 1.0, otherwise decays with dominator count
+        rank_reward = 1.0 / (1.0 + dominators)
+
+        # Crowding distance bonus for front members
+        if dominators == 0 and len(self._archive) > 2:
+            cd = self._crowding_distance(point)
+            rank_reward = min(1.0, rank_reward + 0.1 * cd)
+
+        return float(rank_reward)
+
+    @property
+    def front_size(self) -> int:
+        """Number of non-dominated points."""
+        front = [p for p in self._archive
+                 if not any(q.dominates(p) for q in self._archive if q is not p)]
+        return len(front)
+
+    @property
+    def archive_size(self) -> int:
+        return len(self._archive)
+
+    def _crowding_distance(self, point: ParetoPoint) -> float:
+        """Normalised crowding distance of point within the archive."""
+        if len(self._archive) < 3:
+            return 1.0
+        n_obj = len(point.objectives)
+        all_obj = np.array([p.objectives for p in self._archive])
+        idx = next(i for i, p in enumerate(self._archive) if p is point)
+
+        cd = 0.0
+        for m in range(n_obj):
+            sorted_idx = np.argsort(all_obj[:, m])
+            pos = int(np.where(sorted_idx == idx)[0][0])
+            obj_range = float(all_obj[:, m].max() - all_obj[:, m].min())
+            if obj_range < 1e-12 or pos == 0 or pos == len(sorted_idx) - 1:
+                cd += 1.0
+            else:
+                prev_val = all_obj[sorted_idx[pos - 1], m]
+                next_val = all_obj[sorted_idx[pos + 1], m]
+                cd += (next_val - prev_val) / obj_range
+
+        return cd / n_obj
+
+    def _prune(self):
+        """Remove lowest crowding-distance points until at max_size."""
+        while len(self._archive) > self.max_size:
+            worst_idx = 0
+            worst_cd = float("inf")
+            for i, p in enumerate(self._archive):
+                cd = self._crowding_distance(p)
+                if cd < worst_cd:
+                    worst_cd = cd
+                    worst_idx = i
+            self._archive.pop(worst_idx)
+
+
+class ParetoRewardComputer(RewardComputer):
+    """
+    Extends RewardComputer with Pareto dominance-based reward assignment.
+
+    Instead of total = task + lambda*constraint + cost + variance,
+    maps each episode to a 4D objective vector and computes reward from
+    dominance rank in the maintained Pareto archive.
+
+    Falls back to scalarized total when archive is in warmup (< min_archive_size).
+    """
+
+    def __init__(self, *args, min_archive_size: int = 30,
+                 archive_max_size: int = 200, logger=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.archive = ParetoArchive(max_size=archive_max_size)
+        self.min_archive_size = min_archive_size
+        self._logger = logger
+
+    def compute(
+        self,
+        trace,
+        x: str,
+        y_star: str,
+        constraints=None,
+        metadata=None,
+    ) -> RewardComponents:
+        """Compute reward components, then override total with Pareto rank."""
+        base = super().compute(trace, x, y_star, constraints, metadata)
+
+        objectives = np.array([
+            base.task,
+            base.constraint,
+            -base.cost,       # negate so higher = better (lower cost)
+            -base.variance,   # negate so higher = better (lower variance)
+        ], dtype=np.float64)
+
+        path_key = "|".join(trace.node_ids)
+        point = ParetoPoint(
+            objectives=objectives,
+            path_key=path_key,
+            reward_components=base,
+        )
+
+        if self.archive.archive_size < self.min_archive_size:
+            self.archive.add(point)
+            return base
+
+        pareto_reward = self.archive.add(point)
+
+        if self._logger is not None:
+            self._logger.log_pareto(
+                archive_size=self.archive.archive_size,
+                front_size=self.archive.front_size,
+                dominance_rank=pareto_reward,
+            )
+
+        return RewardComponents(
+            task=base.task,
+            constraint=base.constraint,
+            cost=base.cost,
+            variance=base.variance,
+            total=pareto_reward,
+        )

@@ -223,6 +223,29 @@ class LinUCBPolicy:
         for edge in edges_traversed:
             self.update(edge, phi, reward)
 
+    def update_path_grpo(
+        self,
+        group_paths:   list[list[tuple[str, str]]],
+        group_rewards: list[float],
+        phi:           np.ndarray,
+    ) -> None:
+        """
+        GRPO-style group relative update: sample k paths, compute group mean
+        as baseline, update each path's edges with advantage = r - mean(r).
+
+        This reduces reward variance and accelerates convergence by normalizing
+        the reward signal relative to the current input's difficulty.
+
+        Inspired by mmGRPO (2025): per-module policy gradient composition.
+        """
+        if not group_rewards:
+            return
+        baseline = float(np.mean(group_rewards))
+        for edges, reward in zip(group_paths, group_rewards):
+            advantage = reward - baseline
+            for edge in edges:
+                self.update(edge, phi, advantage)
+
     # ------------------------------------------------------------------
     # Diagnostics
     # ------------------------------------------------------------------

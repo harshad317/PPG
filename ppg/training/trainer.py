@@ -42,7 +42,11 @@ import numpy as np
 
 from ppg.bandits.linucb import LinUCBPolicy
 from ppg.core.executor import PPGExecutor, RandomSelector
+from ppg.logging_utils import NullLogger, PPGLogger
+from ppg.training.branching import FailureModeBrancher
 from ppg.training.credit import CreditAssigner, CreditAssignmentResult
+from ppg.training.evolution import FragmentEvolver
+from ppg.training.reflection import ReflectionLoop, ReflectionResult
 from ppg.training.reward import RewardComponents, RewardComputer
 
 
@@ -66,6 +70,7 @@ class EpisodeResult:
     credit:      Optional[CreditAssignmentResult]
     path:        list[str]        # node_ids visited
     token_count: int
+    reflection:  Optional[ReflectionResult] = None
 
 
 @dataclass
@@ -94,11 +99,39 @@ class TrainerConfig:
     # Progress display
     show_progress: bool = True
 
+    # GRPO: sample k paths per input and use group-relative advantage.
+    # Set > 1 to enable GRPO-style updates. Each input gets k_grpo_paths
+    # independent path samples; the bandit updates with advantage = r - mean(r).
+    k_grpo_paths: int = 1
+
     # Parallelism — concurrent episode collection via ThreadPoolExecutor.
     # LM API calls are I/O-bound so threads scale well up to API rate limits.
     # Policy updates and credit assignment remain sequential.
     # Set to os.cpu_count() to saturate available cores.
     n_workers: int = 1
+
+    @classmethod
+    def production(cls, **overrides) -> "TrainerConfig":
+        """Tuned config for maximum benchmark performance.
+
+        5k train episodes gives LinUCB enough signal to converge on rich graphs.
+        Higher p_ablate_train gives more LOO marginal signals per edge.
+        Higher alpha_train encourages broader edge coverage during exploration.
+        """
+        defaults = dict(
+            n_warmup_episodes=500,
+            n_train_episodes=5000,
+            n_finetune_episodes=1000,
+            alpha_train=0.8,
+            alpha_finetune=0.05,
+            p_ablate_warmup=0.15,
+            p_ablate_train=0.40,
+            p_ablate_finetune=0.15,
+            n_workers=4,
+            k_grpo_paths=4,
+        )
+        defaults.update(overrides)
+        return cls(**defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +213,10 @@ class PPGTrainer:
         credit_assigner: CreditAssigner,
         config:          Optional[TrainerConfig] = None,
         on_episode:      Optional[Callable[[int, EpisodeResult], None]] = None,
+        reflection_loop: Optional[ReflectionLoop] = None,
+        evolver:         Optional[FragmentEvolver] = None,
+        brancher:        Optional[FailureModeBrancher] = None,
+        logger:          Optional[PPGLogger] = None,
     ):
         self.executor  = executor
         self.policy    = policy
@@ -187,6 +224,10 @@ class PPGTrainer:
         self.credit    = credit_assigner
         self.cfg       = config or TrainerConfig()
         self.on_episode = on_episode
+        self.reflection = reflection_loop
+        self.evolver    = evolver
+        self.brancher   = brancher
+        self.logger     = logger or NullLogger()
 
         self._rng      = np.random.default_rng(self.cfg.seed)
         self._py_rng   = random.Random(self.cfg.seed)
@@ -229,6 +270,8 @@ class PPGTrainer:
 
     def _run_warmup(self, dataset: list[TrainingExample]) -> None:
         """Phase 1: random routing; offline policy updates."""
+        self.logger.log_phase_start("warmup", self.cfg.n_warmup_episodes)
+
         random_selector = RandomSelector(seed=self.cfg.seed)
         original_selector = self.executor.selector
         self.executor.selector = random_selector
@@ -241,9 +284,12 @@ class PPGTrainer:
 
         self.executor.selector = original_selector
         self.credit.cfg.p_ablate = original_p
+        self.logger.log_phase_end("warmup")
 
     def _run_train(self, dataset: list[TrainingExample]) -> None:
         """Phase 2: LinUCB routing with full exploration."""
+        self.logger.log_phase_start("train", self.cfg.n_train_episodes)
+
         original_alpha = self.policy.alpha
         self.policy.alpha = self.cfg.alpha_train
 
@@ -256,8 +302,14 @@ class PPGTrainer:
         self.policy.alpha = original_alpha
         self.credit.cfg.p_ablate = original_p
 
+        self._log_arm_stats()
+        self._log_node_utilities()
+        self.logger.log_phase_end("train")
+
     def _run_finetune(self, dataset: list[TrainingExample]) -> None:
         """Phase 3: low-exploration exploitation."""
+        self.logger.log_phase_start("finetune", self.cfg.n_finetune_episodes)
+
         original_alpha = self.policy.alpha
         self.policy.alpha = self.cfg.alpha_finetune
 
@@ -269,6 +321,10 @@ class PPGTrainer:
 
         self.policy.alpha = original_alpha
         self.credit.cfg.p_ablate = original_p
+
+        self._log_arm_stats()
+        self._log_node_utilities()
+        self.logger.log_phase_end("finetune")
 
     # ------------------------------------------------------------------
     # Core phase dispatcher
@@ -416,6 +472,26 @@ class PPGTrainer:
                     reward_components.total,
                 )
 
+        # Reflection: diagnose failures to annotate fragments with error traces
+        reflection_result = None
+        if self.reflection is not None:
+            reflection_result = self.reflection.maybe_reflect(
+                episode_idx=self._episode,
+                trace=trace,
+                reward=reward_components,
+                x=example.x,
+                y_star=example.y_star,
+                graph=self.executor.graph,
+                constraints=example.constraints or None,
+                rng=self._rng,
+            )
+            if reflection_result is not None:
+                for nid, annotation in reflection_result.fragment_annotations.items():
+                    if nid in self.executor.graph.nodes:
+                        frag = self.executor.graph.nodes[nid]
+                        frag.metadata.setdefault("failure_annotations", [])
+                        frag.metadata["failure_annotations"].append(annotation)
+
         result = EpisodeResult(
             phase=phase,
             episode=self._episode,
@@ -423,14 +499,50 @@ class PPGTrainer:
             credit=credit_result,
             path=trace.node_ids,
             token_count=trace.token_count,
+            reflection=reflection_result,
         )
 
         self._stats.record(result)
+
+        # Structured logging
+        self.logger.log_episode(
+            episode=self._episode,
+            phase=phase,
+            reward_components=reward_components.as_dict(),
+            path=trace.node_ids,
+            token_count=trace.token_count,
+            input_text=example.x,
+            prediction=trace.lm_response,
+            reference=example.y_star,
+            credit={
+                "node_id": credit_result.node_id,
+                "marginal": round(credit_result.marginal, 4),
+                "full_score": round(credit_result.full_score, 4),
+                "ablated_score": round(credit_result.ablated_score, 4),
+            } if credit_result else None,
+            reflection={
+                "failure_categories": reflection_result.failure_categories,
+                "constraint_violations": reflection_result.constraint_violations[:3],
+                "n_annotations": len(reflection_result.fragment_annotations),
+            } if reflection_result else None,
+            constraints=example.constraints or None,
+        )
 
         if self.on_episode is not None:
             self.on_episode(self._episode, result)
 
         self._maybe_checkpoint(phase)
+
+        # Evolution + branching: periodically evolve fragments and create branches
+        if self.evolver is not None and phase == "train":
+            actions = self.evolver.maybe_evolve(self.executor.graph, self._episode, self._rng)
+            if actions:
+                self.logger.log_evolution(actions, self.evolver.stats)
+        if self.brancher is not None and phase == "train":
+            actions = self.brancher.maybe_branch(self.executor.graph, self._episode)
+            if actions:
+                self.logger.log_branching(actions, self.brancher.stats)
+
         self._episode += 1
 
         return result
@@ -442,11 +554,51 @@ class PPGTrainer:
         train_mode: bool,
     ) -> EpisodeResult:
         trace, reward_components = self._collect(example, train_mode)
+
+        # GRPO: collect additional paths for group-relative updates
+        if self.cfg.k_grpo_paths > 1 and train_mode and self._train_policy:
+            self._grpo_update(example, trace, reward_components, train_mode)
+
         return self._apply_update(trace, reward_components, example, phase)
+
+    def _grpo_update(
+        self,
+        example:    TrainingExample,
+        trace,
+        reward_components,
+        train_mode: bool,
+    ) -> None:
+        """GRPO: sample k-1 additional paths, compute group advantage, update bandit."""
+        phi = trace.pre_lm_features.as_vector()
+        group_paths = [trace.edges_traversed]
+        group_rewards = [reward_components.total]
+
+        for _ in range(self.cfg.k_grpo_paths - 1):
+            alt_trace, alt_reward = self._collect(example, train_mode)
+            group_paths.append(alt_trace.edges_traversed)
+            group_rewards.append(alt_reward.total)
+
+        self.policy.update_path_grpo(group_paths, group_rewards, phi)
+
+        baseline = float(np.mean(group_rewards))
+        advantages = [r - baseline for r in group_rewards]
+        self.logger.log_grpo(group_rewards, advantages)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _log_arm_stats(self) -> None:
+        """Log bandit arm statistics at end of phase."""
+        if self._train_policy:
+            self.logger.log_arm_stats(self.policy.arm_stats())
+
+    def _log_node_utilities(self) -> None:
+        """Log fragment utility scores for all nodes."""
+        for nid, frag in self.executor.graph.nodes.items():
+            if frag.utility_n > 0:
+                self.logger.log_node_utility(nid, frag.type.value,
+                                             frag.utility, frag.utility_n)
 
     def _make_cycle(
         self,

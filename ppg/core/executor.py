@@ -179,11 +179,24 @@ class PromptAssembler:
 
 @dataclass
 class ExecutorConfig:
-    escalation_enabled:   bool  = False   # PPG-fast by default
+    escalation_enabled:   bool  = False   # PPG-fast by default; use .production() for escalation
     k_samples:            int   = 1       # samples for consistency (>1 enables escalation)
     escalation_threshold: float = 0.4     # sc_disagreement above this -> escalate
     max_path_length:      int   = 10      # safety cap to prevent runaway paths
     prompt_separator:     str   = "\n\n"
+
+    @classmethod
+    def production(cls) -> "ExecutorConfig":
+        """Tuned config for maximum benchmark performance.
+
+        Enables self-consistency escalation with k=3 samples and a lower
+        threshold to catch more reasoning errors.
+        """
+        return cls(
+            escalation_enabled=True,
+            k_samples=3,
+            escalation_threshold=0.3,
+        )
 
 
 class PPGExecutor:
