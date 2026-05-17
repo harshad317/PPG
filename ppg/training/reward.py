@@ -267,7 +267,10 @@ class IFBenchConstraintChecker:
     def _check_length(self, response: str, ctext: str) -> bool:
         import re as _re
         words = len(response.split())
-        # parse "fewer than N words", "at least N words", "exactly N words", etc.
+        chars = len(response)
+        sentences = len([s for s in _re.split(r"[.!?]+", response.strip()) if s.strip()])
+
+        # --- word count ---
         m = _re.search(r"(fewer than|less than|under)\s+(\d+)\s+word", ctext)
         if m:
             return words < int(m.group(2))
@@ -287,11 +290,45 @@ class IFBenchConstraintChecker:
         m = _re.search(r"(\d+)\s*(to|-)\s*(\d+)\s+word", ctext)
         if m:
             return int(m.group(1)) <= words <= int(m.group(3))
-        # Sentence count fallback
-        sentences = len([s for s in _re.split(r"[.!?]+", response.strip()) if s.strip()])
+
+        # --- character count ---
+        m = _re.search(r"(fewer than|less than|under)\s+(\d+)\s+char", ctext)
+        if m:
+            return chars < int(m.group(2))
+        m = _re.search(r"(at most|no more than|maximum of)\s+(\d+)\s+char", ctext)
+        if m:
+            return chars <= int(m.group(2))
+        m = _re.search(r"(more than|over)\s+(\d+)\s+char", ctext)
+        if m:
+            return chars > int(m.group(2))
+        m = _re.search(r"(at least|no fewer than|minimum of)\s+(\d+)\s+char", ctext)
+        if m:
+            return chars >= int(m.group(2))
+
+        # --- sentence count (comparative first, then bare target) ---
+        m = _re.search(r"(fewer than|less than|under)\s+(\d+)\s+sentence", ctext)
+        if m:
+            return sentences < int(m.group(2))
+        m = _re.search(r"(at most|no more than|maximum of)\s+(\d+)\s+sentence", ctext)
+        if m:
+            return sentences <= int(m.group(2))
+        m = _re.search(r"(more than|over)\s+(\d+)\s+sentence", ctext)
+        if m:
+            return sentences > int(m.group(2))
+        m = _re.search(r"(at least|no fewer than|minimum of)\s+(\d+)\s+sentence", ctext)
+        if m:
+            return sentences >= int(m.group(2))
+        m = _re.search(r"(exactly|around|about)\s+(\d+)\s+sentence", ctext)
+        if m:
+            return abs(sentences - int(m.group(2))) <= 1
+        m = _re.search(r"(\d+)\s*(to|-)\s*(\d+)\s+sentence", ctext)
+        if m:
+            return int(m.group(1)) <= sentences <= int(m.group(3))
+        # bare "N sentence(s)" — treat as target with ±1 tolerance
         m = _re.search(r"(\d+)\s+sentence", ctext)
         if m:
             return abs(sentences - int(m.group(1))) <= 1
+
         return ctext in response.lower()
 
     def _check_format(self, response: str, ctext: str) -> bool:
@@ -316,23 +353,50 @@ class IFBenchConstraintChecker:
     def _check_keywords(self, response: str, ctext: str) -> bool:
         resp_lower = response.lower()
         import re as _re
-        # "do not use X" / "avoid X"
-        m = _re.search(
+
+        _KW_STOP = frozenset({
+            "the", "a", "an", "any", "this", "that", "with", "and", "or",
+            "word", "words", "phrase", "phrases", "keyword", "keywords",
+            "include", "contain", "use", "mention", "avoid", "without",
+            "not", "do", "no", "must", "should",
+        })
+
+        def _extract_kws(tail: str) -> list[str]:
+            # Prefer explicitly quoted strings — most precise
+            quoted = _re.findall(r"""['"]([^'"]+)['"]""", tail)
+            if quoted:
+                return [q.strip().lower() for q in quoted if q.strip()]
+            # Fall back: content words (3+ chars) not in stop list
+            return [
+                w.lower() for w in _re.findall(r"[a-zA-Z][\w-]{2,}", tail)
+                if w.lower() not in _KW_STOP
+            ]
+
+        # Negation: "do not use X and Y", "avoid X, Y", "without X"
+        neg = _re.search(
             r'(?:do not|avoid|without|no)\s+'
             r'(?:(?:include|contain|use|mention)\s+)?'
-            r'(?:any\s+)?(?:the\s+)?(?:word\s+)?["\']?([\w-]+)["\']?',
-            ctext,
+            r'(?:any\s+)?(?:the\s+)?(?:words?\s+|phrases?\s+|keywords?\s+)?',
+            ctext, _re.IGNORECASE,
         )
-        if m:
-            return m.group(1).lower() not in resp_lower
-        # "include the word X" / "must contain X"
-        m = _re.search(
+        if neg:
+            tail = ctext[neg.end():]
+            kws = _extract_kws(tail)
+            if kws:
+                return all(kw not in resp_lower for kw in kws)
+
+        # Inclusion: "include the words X and Y", "must contain X"
+        pos = _re.search(
             r'(?:include|contain|use|mention)\s+'
-            r'(?:any\s+)?(?:the\s+)?(?:word\s+)?["\']?([\w-]+)["\']?',
-            ctext,
+            r'(?:any\s+)?(?:the\s+)?(?:words?\s+|phrases?\s+|keywords?\s+)?',
+            ctext, _re.IGNORECASE,
         )
-        if m:
-            return m.group(1).lower() in resp_lower
+        if pos:
+            tail = ctext[pos.end():]
+            kws = _extract_kws(tail)
+            if kws:
+                return all(kw in resp_lower for kw in kws)
+
         return ctext in resp_lower
 
     def _check_content_words(self, response: str, ctext: str) -> bool:

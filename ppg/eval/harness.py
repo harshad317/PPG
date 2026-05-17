@@ -259,7 +259,14 @@ class _StaticBestRunner:
 
 
 class _ExecutorRunner:
-    """Wraps PPGExecutor with a swapped selector."""
+    """
+    Wraps PPGExecutor with a swapped selector.
+
+    NOT thread-safe: run() swaps executor.selector at call time, so concurrent
+    calls race on that attribute.  EvalHarness does NOT use this class — it
+    sets the selector once in _run_executor_baseline before spawning threads.
+    Only use _ExecutorRunner in single-threaded contexts.
+    """
 
     def __init__(self, executor: PPGExecutor, selector):
         self._executor = executor
