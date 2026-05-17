@@ -441,6 +441,25 @@ def main():
                              "set to os.cpu_count() for max throughput)")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress tqdm/rich progress bars")
+
+    # --- Production mode: enables all new features ---
+    parser.add_argument("--production", action="store_true",
+                        help="Use production configs (Pareto reward, GRPO, reflection, "
+                             "evolution, branching, semantic features, self-consistency)")
+    parser.add_argument("--log-dir", default=None, dest="log_dir",
+                        help="Structured logging directory (default: ppg_logs/<bench>_<timestamp>)")
+    parser.add_argument("--enable-wandb", action="store_true", dest="enable_wandb",
+                        help="Enable Weights & Biases logging")
+    parser.add_argument("--no-reflection", action="store_true", dest="no_reflection",
+                        help="Disable reflection loop (even in --production)")
+    parser.add_argument("--no-evolution", action="store_true", dest="no_evolution",
+                        help="Disable fragment evolution (even in --production)")
+    parser.add_argument("--no-branching", action="store_true", dest="no_branching",
+                        help="Disable failure-mode branching (even in --production)")
+    parser.add_argument("--no-pareto", action="store_true", dest="no_pareto",
+                        help="Use scalarized reward instead of Pareto (even in --production)")
+    parser.add_argument("--ppg-reflection-model", default=None, dest="ppg_reflection_model",
+                        help="LM for PPG reflection/evolution (default: same as --model)")
     args = parser.parse_args()
 
     show_progress = not args.quiet
@@ -505,31 +524,68 @@ def main():
     from ppg.training.reward import RewardComputer, RewardConfig
     from ppg.training.trainer import PPGTrainer, TrainerConfig
 
+    use_prod = args.production
+
     graph_key = _GRAPH_MAP[bench]
     graph     = build_graph(graph_key, topology="rich")
     policy    = LinUCBPolicy(graph)
+
+    feat_extractor = FeatureExtractor.production() if use_prod else FeatureExtractor()
+    exec_config    = ExecutorConfig.production() if use_prod else ExecutorConfig(escalation_enabled=False)
     executor  = PPGExecutor(
         graph=graph,
         selector=policy,
         lm=lm,
-        feature_extractor=FeatureExtractor(),
-        config=ExecutorConfig(escalation_enabled=False),
+        feature_extractor=feat_extractor,
+        config=exec_config,
     )
     assembler = PromptAssembler(graph)
-    # For constraint-only benchmarks (IFEval, IFBench), constraint satisfaction
-    # IS the task signal — ExactMatch against y_star would always be 0.
+
     constraint_as_task = bench in ("ifeval", "ifbench")
-    reward    = RewardComputer(
-        task_metric=metric,
-        lm=lm,
-        assembler=assembler,
-        constraint_checker=constraint_checker,
-        config=RewardConfig(
-            constraint_as_task=constraint_as_task,
-            skip_variance=constraint_as_task,
-        ),
+
+    # --- Logger ---
+    from ppg.logging_utils import PPGLogger, NullLogger, LogConfig
+    if args.log_dir or use_prod:
+        log_ts = time.strftime("%Y%m%d_%H%M%S")
+        log_dir = args.log_dir or f"ppg_logs/{bench}_{log_ts}"
+        ppg_logger = PPGLogger(LogConfig(
+            log_dir=log_dir,
+            enable_wandb=args.enable_wandb,
+            wandb_project="ppg",
+            wandb_run_name=f"{bench}_{args.model}_{log_ts}",
+        ))
+        _info(f"logging → {log_dir}")
+    else:
+        ppg_logger = NullLogger()
+
+    # --- Reward (Pareto or scalarized) ---
+    reward_cfg_base = dict(
+        constraint_as_task=constraint_as_task,
+        skip_variance=constraint_as_task,
     )
-    credit    = CreditAssigner(
+    if use_prod and not args.no_pareto:
+        from ppg.training.reward import ParetoRewardComputer
+        prod_cfg = RewardConfig.production(**reward_cfg_base)
+        reward = ParetoRewardComputer(
+            task_metric=metric,
+            lm=lm,
+            assembler=assembler,
+            constraint_checker=constraint_checker,
+            config=prod_cfg,
+            logger=ppg_logger,
+        )
+        _info("reward: ParetoRewardComputer")
+    else:
+        rcfg = RewardConfig.production(**reward_cfg_base) if use_prod else RewardConfig(**reward_cfg_base)
+        reward = RewardComputer(
+            task_metric=metric,
+            lm=lm,
+            assembler=assembler,
+            constraint_checker=constraint_checker,
+            config=rcfg,
+        )
+
+    credit = CreditAssigner(
         lm=lm,
         assembler=assembler,
         task_metric=metric,
@@ -537,19 +593,76 @@ def main():
         constraint_checker=constraint_checker,
         constraint_as_task=constraint_as_task,
     )
-    trainer   = PPGTrainer(
-        executor=executor,
-        policy=policy,
-        reward_computer=reward,
-        credit_assigner=credit,
-        config=TrainerConfig(
+
+    # --- Reflection / Evolution / Branching (production mode) ---
+    reflection_loop = None
+    evolver = None
+    brancher = None
+
+    if use_prod:
+        refl_lm = lm
+        if args.ppg_reflection_model:
+            from ppg.lm.clients import CountingLMClient
+            refl_lm = CountingLMClient(make_lm(args.provider, args.ppg_reflection_model, cache_dir))
+
+        if not args.no_reflection:
+            from ppg.training.reflection import ReflectionLoop, ReflectionConfig
+            reflection_loop = ReflectionLoop(
+                lm=refl_lm,
+                config=ReflectionConfig(enabled=True, score_threshold=0.5, reflect_fraction=0.3),
+                constraint_checker=constraint_checker,
+            )
+            _info("reflection: enabled")
+
+        if not args.no_evolution:
+            from ppg.training.evolution import FragmentEvolver, EvolutionConfig
+            evolver = FragmentEvolver(
+                lm=refl_lm,
+                config=EvolutionConfig(enabled=True, evolve_every=500),
+                reflection=reflection_loop,
+                benchmark=bench,
+            )
+            _info("evolution: enabled (every 500 episodes)")
+
+        if not args.no_branching and reflection_loop is not None:
+            from ppg.training.branching import FailureModeBrancher, BranchingConfig
+            brancher = FailureModeBrancher(
+                lm=refl_lm,
+                reflection=reflection_loop,
+                config=BranchingConfig(enabled=True, branch_every=1000),
+            )
+            _info("branching: enabled (every 1000 episodes)")
+
+    # --- Trainer config ---
+    if use_prod:
+        trainer_cfg = TrainerConfig.production(
             n_warmup_episodes=args.warmup,
             n_train_episodes=args.train_ep,
             n_finetune_episodes=args.finetune,
             checkpoint_dir=args.checkpoint_dir,
             show_progress=show_progress,
             n_workers=args.workers,
-        ),
+        )
+    else:
+        trainer_cfg = TrainerConfig(
+            n_warmup_episodes=args.warmup,
+            n_train_episodes=args.train_ep,
+            n_finetune_episodes=args.finetune,
+            checkpoint_dir=args.checkpoint_dir,
+            show_progress=show_progress,
+            n_workers=args.workers,
+        )
+
+    trainer = PPGTrainer(
+        executor=executor,
+        policy=policy,
+        reward_computer=reward,
+        credit_assigner=credit,
+        config=trainer_cfg,
+        reflection_loop=reflection_loop,
+        evolver=evolver,
+        brancher=brancher,
+        logger=ppg_logger,
     )
 
     # ------------------------------------------------------------------
@@ -640,6 +753,7 @@ def main():
             n_workers=args.workers,
         ),
         constraint_checker=constraint_checker,
+        logger=ppg_logger,
     )
 
     all_metrics:       dict[str, "BaselineMetrics"] = {}
@@ -861,6 +975,17 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
     print(f"\nResults saved → {out_path}")
+
+    # ------------------------------------------------------------------
+    # Diagnostic report (production mode)
+    # ------------------------------------------------------------------
+    if use_prod and hasattr(ppg_logger, "diagnostic_report"):
+        report_text = ppg_logger.diagnostic_report()
+        if report_text:
+            print(f"\n{'=' * 60}")
+            print("PPG DIAGNOSTIC REPORT")
+            print(f"{'=' * 60}")
+            print(report_text)
 
 
 if __name__ == "__main__":
