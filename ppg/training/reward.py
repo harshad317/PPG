@@ -885,6 +885,7 @@ class ParetoRewardComputer(RewardComputer):
         self.archive = ParetoArchive(max_size=archive_max_size)
         self.min_archive_size = min_archive_size
         self._logger = logger
+        self._pareto_active = False
 
     def compute(
         self,
@@ -897,12 +898,16 @@ class ParetoRewardComputer(RewardComputer):
         """Compute reward components, then override total with Pareto rank."""
         base = super().compute(trace, x, y_star, constraints, metadata)
 
-        objectives = np.array([
-            base.task,
-            base.constraint,
-            -base.cost,       # negate so higher = better (lower cost)
-            -base.variance,   # negate so higher = better (lower variance)
-        ], dtype=np.float64)
+        # Build objective vector from active dimensions only.
+        # When constraint_as_task=True, constraint is folded into task (always 0).
+        # When skip_variance=True, variance is always 0.
+        # Including zero-valued dims makes dominance degenerate.
+        obj_list = [base.task, -base.cost]
+        if not self.cfg.constraint_as_task:
+            obj_list.append(base.constraint)
+        if not self.cfg.skip_variance:
+            obj_list.append(-base.variance)
+        objectives = np.array(obj_list, dtype=np.float64)
 
         path_key = "|".join(trace.node_ids)
         point = ParetoPoint(
@@ -914,6 +919,9 @@ class ParetoRewardComputer(RewardComputer):
         if self.archive.archive_size < self.min_archive_size:
             self.archive.add(point)
             return base
+
+        if not self._pareto_active:
+            self._pareto_active = True
 
         pareto_reward = self.archive.add(point)
 

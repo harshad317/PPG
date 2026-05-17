@@ -609,10 +609,14 @@ def main():
             from ppg.training.reflection import ReflectionLoop, ReflectionConfig
             reflection_loop = ReflectionLoop(
                 lm=refl_lm,
-                config=ReflectionConfig(enabled=True, score_threshold=0.5, reflect_fraction=0.3),
+                config=ReflectionConfig(
+                    enabled=True,
+                    score_threshold=0.75,
+                    reflect_fraction=0.5,
+                ),
                 constraint_checker=constraint_checker,
             )
-            _info("reflection: enabled")
+            _info("reflection: enabled (threshold=0.75, fraction=0.5)")
 
         if not args.no_evolution:
             from ppg.training.evolution import FragmentEvolver, EvolutionConfig
@@ -629,9 +633,9 @@ def main():
             brancher = FailureModeBrancher(
                 lm=refl_lm,
                 reflection=reflection_loop,
-                config=BranchingConfig(enabled=True, branch_every=1000),
+                config=BranchingConfig(enabled=True, branch_every=500, min_reflections=20),
             )
-            _info("branching: enabled (every 1000 episodes)")
+            _info("branching: enabled (every 500 episodes, min 20 reflections)")
 
     # --- Trainer config ---
     if use_prod:

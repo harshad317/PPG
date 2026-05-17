@@ -430,6 +430,13 @@ class PPGLogger:
                 if utils:
                     lines.append(f"  {label:<35s}  {utils[-1]:+.4f}  (n={len(utils)})")
 
+        # Feature activation status
+        lines.append(f"\n--- FEATURE STATUS ---")
+        lines.append(f"  GRPO events:      {len(self._grpo_advantages) if self._grpo_advantages else 0}")
+        lines.append(f"  Pareto snapshots:  {len(self._pareto_front_sizes) if self._pareto_front_sizes else 0}")
+        n_reflections = sum(self._failure_modes.values()) if self._failure_modes else 0
+        lines.append(f"  Reflections:       {n_reflections}")
+
         # GRPO stats
         if self._grpo_advantages:
             adv = np.array(self._grpo_advantages)
@@ -438,12 +445,18 @@ class PPGLogger:
             lines.append(f"  Std advantage:   {np.std(adv):.4f}")
             lines.append(f"  Max advantage:   {np.max(adv):+.4f}")
             lines.append(f"  Min advantage:   {np.min(adv):+.4f}")
+        else:
+            lines.append(f"\n--- GRPO ---")
+            lines.append(f"  NOT ACTIVE — check k_grpo_paths > 1 and workers config")
 
         # Pareto
         if self._pareto_front_sizes:
             lines.append(f"\n--- PARETO ARCHIVE ---")
             lines.append(f"  Final front size: {self._pareto_front_sizes[-1]}")
             lines.append(f"  Max front size:   {max(self._pareto_front_sizes)}")
+        else:
+            lines.append(f"\n--- PARETO ---")
+            lines.append(f"  NOT ACTIVE — check --production and no --no-pareto")
 
         # Actionable recommendations
         lines.append(f"\n--- RECOMMENDATIONS ---")
@@ -473,9 +486,12 @@ class PPGLogger:
             recs.append("Low path diversity — bandit collapsed to one path. Increase alpha or add fragments")
 
         constraint_failures = self._failure_modes.get("constraint", 0)
+        format_failures = self._failure_modes.get("format", 0)
         total_failures = sum(self._failure_modes.values()) if self._failure_modes else 1
-        if constraint_failures > total_failures * 0.4:
-            recs.append("Constraint failures dominate — enable constraint_as_task=True or improve output_contract fragments")
+        if constraint_failures > total_failures * 0.3:
+            recs.append("Constraint failures dominate — strengthen output_contract fragments or add constraint-specific few-shot examples")
+        if format_failures > total_failures * 0.3:
+            recs.append("Format failures dominate — add explicit format instructions to output_contract or reasoning_style fragments")
 
         reasoning_failures = self._failure_modes.get("reasoning", 0)
         if reasoning_failures > total_failures * 0.4:

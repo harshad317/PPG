@@ -439,7 +439,13 @@ class PPGTrainer:
         phase:             str,
     ) -> EpisodeResult:
         """Policy update + credit assignment + stats. Must run sequentially."""
+        train_mode = phase in ("train", "finetune")
         phi = trace.pre_lm_features.as_vector()
+
+        # GRPO: sample additional paths for group-relative advantage updates.
+        # Runs before standard update so the bandit sees comparative signal.
+        if self.cfg.k_grpo_paths > 1 and train_mode and self._train_policy:
+            self._grpo_update(example, trace, reward_components, train_mode)
 
         # Run credit first so its marginal can sharpen per-edge reward signals.
         credit_result = self.credit.maybe_assign(
@@ -554,11 +560,6 @@ class PPGTrainer:
         train_mode: bool,
     ) -> EpisodeResult:
         trace, reward_components = self._collect(example, train_mode)
-
-        # GRPO: collect additional paths for group-relative updates
-        if self.cfg.k_grpo_paths > 1 and train_mode and self._train_policy:
-            self._grpo_update(example, trace, reward_components, train_mode)
-
         return self._apply_update(trace, reward_components, example, phase)
 
     def _grpo_update(
