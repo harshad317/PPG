@@ -300,6 +300,8 @@ class PPGLogger:
 
     def log_grpo(self, group_rewards: list[float], advantages: list[float]):
         """Log GRPO group statistics."""
+        for adv in advantages:
+            self._grpo_advantages.append(adv)
         event = {
             "type": "grpo",
             "episode": self._episode_count,
