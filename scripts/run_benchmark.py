@@ -585,11 +585,16 @@ def main():
             config=rcfg,
         )
 
+    credit_cfg = CreditAssignerConfig()
+    if use_prod:
+        credit_cfg.skip_source = False
+        credit_cfg.skip_terminal = False
+        credit_cfg.p_ablate = 0.25
     credit = CreditAssigner(
         lm=lm,
         assembler=assembler,
         task_metric=metric,
-        config=CreditAssignerConfig(),
+        config=credit_cfg,
         constraint_checker=constraint_checker,
         constraint_as_task=constraint_as_task,
     )
@@ -639,7 +644,7 @@ def main():
 
     # --- Trainer config ---
     if use_prod:
-        trainer_cfg = TrainerConfig.production(
+        prod_overrides = dict(
             n_warmup_episodes=args.warmup,
             n_train_episodes=args.train_ep,
             n_finetune_episodes=args.finetune,
@@ -647,6 +652,13 @@ def main():
             show_progress=show_progress,
             n_workers=args.workers,
         )
+        # Scale alpha down when running fewer episodes than production default
+        # (production alpha=0.8 tuned for 5000 episodes)
+        if args.train_ep < 5000:
+            ratio = args.train_ep / 5000
+            prod_overrides["alpha_train"] = max(0.2, 0.8 * ratio)
+            prod_overrides["alpha_finetune"] = 0.05
+        trainer_cfg = TrainerConfig.production(**prod_overrides)
     else:
         trainer_cfg = TrainerConfig(
             n_warmup_episodes=args.warmup,
