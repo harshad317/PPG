@@ -18,12 +18,7 @@ gepa           : GEPA (DSPy) — requires --run-gepa + dspy-ai installed
 
 Graph fallback map (benchmarks without dedicated fragments use the closest domain)
 ----------------------------------------------------------------------------------
-ifbench      → ifeval graph     (instruction following)
 drop         → hotpotqa graph   (reading comprehension)
-truthfulqa   → hotpotqa graph   (open-domain QA)
-bigbench_hard→ gsm8k graph      (multi-step reasoning)
-arc_challenge→ gsm8k graph      (MCQ reasoning)
-livebench_math→ gsm8k graph     (math reasoning)
 mmlu         → gsm8k graph      (MCQ reasoning)
 
 Usage
@@ -36,14 +31,22 @@ python scripts/run_benchmark.py gsm8k \\
 python scripts/run_benchmark.py gsm8k \\
     --model gpt-4o-mini --run-mipro --run-gepa --reflection-model gpt-4o
 
-# IFBench (constraint following):
-python scripts/run_benchmark.py ifbench \\
+# TruthfulQA:
+python scripts/run_benchmark.py truthfulqa \\
     --model gpt-4o-mini --run-mipro --run-gepa
+
+# ARC-Challenge with few-shot examples:
+python scripts/run_benchmark.py arc_challenge \\
+    --model gpt-4o-mini --few-shot --run-mipro --run-gepa
 
 # BigBenchHard (specific task):
 python scripts/run_benchmark.py bigbench_hard \\
     --model gpt-4o-mini --bbh-task causal_judgement \\
     --run-mipro --run-gepa
+
+# LiveBench Math:
+python scripts/run_benchmark.py livebench_math \\
+    --model gpt-4o-mini --few-shot
 
 # MMLU (specific subject):
 python scripts/run_benchmark.py mmlu \\
@@ -71,15 +74,13 @@ from pathlib import Path
 
 _GRAPH_MAP: dict[str, str] = {
     "gsm8k":         "gsm8k",
-    "ifeval":        "ifeval",
-    "ifbench":       "ifeval",     # instruction-following domain
     "hotpotqa":      "hotpotqa",
     "drop":          "hotpotqa",   # reading-comprehension domain
     "mbpp":          "mbpp",
-    "truthfulqa":    "hotpotqa",   # open-domain QA
-    "bigbench_hard": "gsm8k",      # multi-step reasoning
-    "arc_challenge": "gsm8k",      # MCQ reasoning
-    "livebench_math":"gsm8k",      # math reasoning
+    "truthfulqa":    "truthfulqa",
+    "bigbench_hard": "bigbench_hard",
+    "arc_challenge": "arc_challenge",
+    "livebench_math":"livebench_math",
     "mmlu":          "gsm8k",      # MCQ reasoning
 }
 
@@ -108,7 +109,7 @@ def load_splits(
     """
     from ppg.eval.benchmarks.loaders import (
         ARCChallengeLoader, BigBenchHardLoader, DROPLoader, GSM8KLoader,
-        HotpotQALoader, IFBenchLoader, IFEvalLoader, LiveBenchMathLoader,
+        HotpotQALoader, LiveBenchMathLoader,
         MBPPLoader, MMLULoader, TruthfulQALoader,
     )
     from ppg.eval.harness import EvalExample
@@ -151,30 +152,6 @@ def load_splits(
         test   = _cap(loader.load("test",  seed=seed + 2), n_test)
         metric = loader.recommended_metric()
         objective = "Maximize exact-match accuracy on multi-step arithmetic word problems."
-
-    # -----------------------------------------------------------------------
-    elif benchmark == "ifeval":
-        loader = IFEvalLoader()
-        all_ex = loader.load("train", seed=seed)
-        train, val, test = _split_single(all_ex, n_train, n_val, n_test)
-        metric = loader.recommended_metric()
-        constraint_checker = loader.recommended_constraint_checker()
-        objective = (
-            "Maximize instruction-following compliance — responses must satisfy "
-            "all explicit format and content constraints in the prompt."
-        )
-
-    # -----------------------------------------------------------------------
-    elif benchmark == "ifbench":
-        loader = IFBenchLoader()
-        all_ex = loader.load("train", seed=seed)
-        train, val, test = _split_single(all_ex, n_train, n_val, n_test)
-        metric = loader.recommended_metric()
-        constraint_checker = loader.recommended_constraint_checker()
-        objective = (
-            "Maximize constraint satisfaction — responses must include required "
-            "keywords and satisfy all stated format constraints."
-        )
 
     # -----------------------------------------------------------------------
     elif benchmark == "hotpotqa":
@@ -461,7 +438,7 @@ def main():
     parser.add_argument("--no-pareto", action="store_true", dest="no_pareto",
                         help="Use scalarized reward instead of Pareto (even in --production)")
     parser.add_argument("--few-shot", action="store_true", dest="few_shot",
-                        help="Include few-shot example fragments in the graph (ifeval/ifbench only)")
+                        help="Include few-shot example fragments in the graph")
     parser.add_argument("--ppg-reflection-model", default=None, dest="ppg_reflection_model",
                         help="LM for PPG reflection/evolution (default: same as --model)")
     args = parser.parse_args()
@@ -546,7 +523,7 @@ def main():
     )
     assembler = PromptAssembler(graph)
 
-    constraint_as_task = bench in ("ifeval", "ifbench")
+    constraint_as_task = False
 
     # --- Logger ---
     from ppg.logging_utils import PPGLogger, NullLogger, LogConfig

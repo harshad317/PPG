@@ -1,7 +1,7 @@
 # Prompt Policy Graphs
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![Tests](https://img.shields.io/badge/tests-642%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-714%20passing-brightgreen)
 ![Status](https://img.shields.io/badge/status-research%20prototype-orange)
 ![License](https://img.shields.io/badge/license-TBD-lightgrey)
 
@@ -21,11 +21,12 @@ The method combines three ideas:
 | FSM-style runtime | Executes prompt fragments conditionally using guards over runtime features | `ppg/core/executor.py`, `ppg/core/features.py` |
 | Bandit training | Learns edge preferences from reward, token cost, variance, and constraints | `ppg/bandits/linucb.py`, `ppg/training/` |
 
-PPG is designed for experiments on benchmarks such as GSM8K, IFEval, IFBench,
-HotpotQA, DROP, MBPP, TruthfulQA, BigBench Hard, ARC-Challenge, LiveBench Math, and
-MMLU. The codebase currently provides the core framework, seed prompt graphs, dataset
-loaders, reward functions, ablation runners, and baseline hooks needed to turn the
-method into a full paper-grade evaluation.
+PPG is designed for experiments on benchmarks such as GSM8K, TruthfulQA, BIG-Bench Hard,
+ARC-Challenge, LiveBench Math, HotpotQA, DROP, MBPP, and MMLU. Seven benchmarks have
+dedicated prompt fragment graphs with curated few-shot examples; two more (DROP, MMLU)
+use domain-matched fallback graphs. The codebase provides the core framework, seed
+prompt graphs, dataset loaders, reward functions, ablation runners, and baseline hooks
+needed to turn the method into a full paper-grade evaluation.
 
 > Research note: this repository is an implementation of the proposed method. It should
 > not be read as a SOTA claim until large-scale benchmark results, statistical testing,
@@ -38,6 +39,7 @@ method into a full paper-grade evaluation.
 - [Architecture](#architecture)
 - [Installation](#installation)
 - [Quickstart](#quickstart)
+- [Running Benchmarks](#running-benchmarks)
 - [Training](#training)
 - [Evaluation](#evaluation)
 - [Ablations](#ablations)
@@ -126,7 +128,9 @@ flowchart LR
 ```mermaid
 flowchart TD
     DP["DOMAIN_PRIMER"] --> TF["TASK_FRAMING"]
+    TF --> FS["FEW_SHOT (optional)"]
     TF --> RS["REASONING_STYLE"]
+    FS --> RS
     RS --> OC["OUTPUT_CONTRACT"]
     RS --> C["COMPRESSION"]
     C --> OC
@@ -138,6 +142,7 @@ The seed library supports a lean topology and a rich topology:
 | --- | --- | --- |
 | `lean` | `TASK_FRAMING -> REASONING_STYLE -> OUTPUT_CONTRACT` | Fast sanity checks and topology ablations |
 | `rich` | Adds `DOMAIN_PRIMER` and optional post-reasoning `COMPRESSION` | Main PPG experiments |
+| `rich --few-shot` | Additionally inserts `FEW_SHOT` layer between `TASK_FRAMING` and `REASONING_STYLE` | Experiments testing in-context learning |
 
 ### Runtime FSM
 
@@ -258,6 +263,45 @@ from ppg.lm import DiskCachedLMClient, OpenAIClient, OpenAIConfig
 base_lm = OpenAIClient(OpenAIConfig(model="gpt-4o-mini", temperature=0.0))
 lm = DiskCachedLMClient(base_lm, cache_path=".cache/lm_cache.json")
 ```
+
+## Running Benchmarks
+
+The benchmark runner (`scripts/run_benchmark.py`) trains PPG from scratch and evaluates
+against all baselines in a single command.
+
+```bash
+# GSM8K — grade-school math
+python scripts/run_benchmark.py gsm8k --model gpt-4o-mini
+
+# TruthfulQA — factual accuracy under adversarial framing
+python scripts/run_benchmark.py truthfulqa --model gpt-4o-mini
+
+# ARC-Challenge — science MCQ with few-shot examples
+python scripts/run_benchmark.py arc_challenge --model gpt-4o-mini --few-shot
+
+# BIG-Bench Hard — multi-step reasoning (specific task)
+python scripts/run_benchmark.py bigbench_hard --model gpt-4o-mini --bbh-task causal_judgement
+
+# LiveBench Math — competition math with dynamic routing
+python scripts/run_benchmark.py livebench_math --model gpt-4o-mini --few-shot --ppg-calibration dynamic
+
+# HotpotQA — multi-hop QA
+python scripts/run_benchmark.py hotpotqa --model gpt-4o-mini
+
+# MBPP — Python function synthesis
+python scripts/run_benchmark.py mbpp --model gpt-4o-mini
+```
+
+Key flags:
+
+| Flag | Effect |
+| --- | --- |
+| `--few-shot` | Inserts a `FEW_SHOT` fragment layer between `TASK_FRAMING` and `REASONING_STYLE` |
+| `--ppg-calibration dynamic` | Uses bandit routing at test time instead of a fixed calibrated path |
+| `--ppg-calibration val_path` | Searches for the best fixed path on the validation set (default) |
+| `--production` | Enables all training features: evolution, branching, reflection, Pareto, semantic features |
+| `--run-mipro` | Adds MIPROv2 external baseline |
+| `--run-gepa` | Adds GEPA external baseline |
 
 ## Training
 
@@ -435,21 +479,21 @@ Supported ablations:
 ![Colorful PPG benchmark coverage map](docs/assets/ppg-benchmark-map.svg)
 
 Benchmark loaders live in `ppg/eval/benchmarks/loaders.py`. They convert Hugging Face
-datasets into `EvalExample` objects and expose recommended metrics.
+datasets into `EvalExample` objects and expose recommended metrics. Seven benchmarks have
+dedicated prompt fragment graphs with curated task-specific few-shot examples in
+`ppg/data/fragments.py`. Two benchmarks (DROP, MMLU) use domain-matched fallback graphs.
 
-| Benchmark | Loader | Default/recommended metric |
-| --- | --- | --- |
-| GSM8K | `GSM8KLoader` | `NumericExactMatchMetric` |
-| IFEval | `IFEvalLoader` | `ExactMatchMetric` + `IFEvalOfficialChecker` (keyword fallback when library absent) |
-| IFBench | `IFBenchLoader` | `ExactMatchMetric` + `IFBenchConstraintChecker` (type-dispatched rule verifier) |
-| HotpotQA | `HotpotQALoader` | `F1Metric` |
-| DROP | `DROPLoader` | `F1Metric` |
-| MBPP | `MBPPLoader` | `MBPPPassAtOneMetric` |
-| TruthfulQA | `TruthfulQALoader` | `F1Metric` |
-| BigBench Hard | `BigBenchHardLoader` | `ExactMatchMetric` |
-| ARC-Challenge | `ARCChallengeLoader` | `MultipleChoiceMetric` |
-| LiveBench Math | `LiveBenchMathLoader` | `NumericExactMatchMetric` |
-| MMLU | `MMLULoader` | `MultipleChoiceMetric` |
+| Benchmark | Loader | Default metric | Dedicated graph | Few-shot |
+| --- | --- | --- | --- | --- |
+| GSM8K | `GSM8KLoader` | `NumericExactMatchMetric` | Yes | Yes |
+| TruthfulQA | `TruthfulQALoader` | `F1Metric` | Yes | Yes |
+| BIG-Bench Hard | `BigBenchHardLoader` | `ExactMatchMetric` | Yes | Yes |
+| ARC-Challenge | `ARCChallengeLoader` | `MultipleChoiceMetric` | Yes | Yes |
+| LiveBench Math | `LiveBenchMathLoader` | `NumericExactMatchMetric` | Yes | Yes |
+| HotpotQA | `HotpotQALoader` | `F1Metric` | Yes | Yes |
+| MBPP | `MBPPLoader` | `MBPPPassAtOneMetric` | Yes | Yes |
+| DROP | `DROPLoader` | `F1Metric` | Fallback (hotpotqa) | -- |
+| MMLU | `MMLULoader` | `MultipleChoiceMetric` | Fallback (gsm8k) | -- |
 
 Example loader usage:
 
@@ -531,7 +575,7 @@ ppg/
     credit.py       # Leave-one-out fragment credit assignment
     trainer.py      # Three-phase training loop
   data/
-    fragments.py    # Seed fragment library and graph builders
+    fragments.py    # Seed fragment library, few-shot examples, and graph builders
   eval/
     harness.py      # Matched-budget evaluation harness
     external.py     # MIPROv2 and GEPA baseline wrappers
@@ -593,7 +637,7 @@ ruff check .
 The last verified local run:
 
 ```text
-642 passed
+714 passed
 ```
 
 ## Citation
