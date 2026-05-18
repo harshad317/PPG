@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Protocol
@@ -261,15 +262,19 @@ class SentenceTransformerCluster:
         self._fallback = _HashCluster(n_clusters)
         self._embedding_buffer: list[np.ndarray] = []
         self._fitted = False
+        self._lock = threading.Lock()
 
     def _ensure_model(self):
         if self._model is not None:
             return
-        try:
-            from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(self.model_name)
-        except ImportError:
-            self._model = None
+        with self._lock:
+            if self._model is not None:
+                return
+            try:
+                from sentence_transformers import SentenceTransformer
+                self._model = SentenceTransformer(self.model_name)
+            except ImportError:
+                self._model = None
 
     def predict(self, texts: list[str]) -> list[int]:
         self._ensure_model()
@@ -280,14 +285,15 @@ class SentenceTransformerCluster:
         if embeddings.ndim == 1:
             embeddings = embeddings[None, :]
 
-        if not self._fitted:
-            for emb in embeddings:
-                self._embedding_buffer.append(emb)
-            if len(self._embedding_buffer) >= self.min_fit_samples:
-                self._fit()
+        with self._lock:
+            if not self._fitted:
+                for emb in embeddings:
+                    self._embedding_buffer.append(emb)
+                if len(self._embedding_buffer) >= self.min_fit_samples:
+                    self._fit()
 
-        if self._fitted:
-            return [int(c) for c in self._kmeans.predict(embeddings)]
+            if self._fitted:
+                return [int(c) for c in self._kmeans.predict(embeddings)]
         return self._fallback.predict(texts)
 
     def _fit(self):
@@ -297,8 +303,9 @@ class SentenceTransformerCluster:
             return
         X = np.stack(self._embedding_buffer)
         n = min(self.n_clusters, len(X))
-        self._kmeans = MiniBatchKMeans(n_clusters=n, random_state=0, n_init=3)
-        self._kmeans.fit(X)
+        kmeans = MiniBatchKMeans(n_clusters=n, random_state=0, n_init=3)
+        kmeans.fit(X)
+        self._kmeans = kmeans
         self._fitted = True
         self._embedding_buffer.clear()
 
