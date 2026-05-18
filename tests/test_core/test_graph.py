@@ -98,10 +98,10 @@ class TestPromptFragment:
         f = PromptFragment.create(FragmentType.TASK_FRAMING, "Solve: {input}")
         assert f.render({"input": "2+2"}) == "Solve: 2+2"
 
-    def test_render_missing_key_raises(self):
+    def test_render_missing_key_defaults_empty(self):
         f = PromptFragment.create(FragmentType.TASK_FRAMING, "Solve: {input} in {lang}")
-        with pytest.raises(ValueError, match="missing key"):
-            f.render({"input": "2+2"})
+        result = f.render({"input": "2+2"})
+        assert result == "Solve: 2+2 in "
 
     def test_update_utility_online_mean(self):
         f = PromptFragment.create(FragmentType.REASONING_STYLE, "Think.")

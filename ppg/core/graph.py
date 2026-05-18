@@ -8,6 +8,7 @@ and the regret bound clean (routing layer only).
 
 from __future__ import annotations
 
+import collections
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -122,11 +123,8 @@ class PromptFragment:
         )
 
     def render(self, context: dict) -> str:
-        """Simple {key} substitution — no Jinja2 dependency required."""
-        try:
-            return self.template.format(**context)
-        except KeyError as e:
-            raise ValueError(f"Fragment {self.id} template missing key: {e}") from e
+        """Simple {key} substitution — missing keys become empty strings."""
+        return self.template.format_map(collections.defaultdict(str, context))
 
     def update_utility(self, marginal_reward: float) -> None:
         """Online mean update for LOO credit assignment."""
