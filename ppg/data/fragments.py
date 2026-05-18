@@ -142,6 +142,13 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "headers, JSON), language, tone, inclusion or exclusion of specific content, "
                 "and structural requirements."
             ),
+            (
+                "You are a constraint-satisfaction engine. "
+                "Every instruction contains explicit requirements that must be met exactly. "
+                "Never approximate a constraint — if it says 50 words, write exactly 50. "
+                "If it says JSON, output valid JSON with no surrounding text. "
+                "Precision over creativity."
+            ),
         ],
         "reasoning_style": [
             # v1: numbered checklist audit before writing
@@ -169,6 +176,20 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "then layer in the remaining ones. "
                 "Output only the final response."
             ),
+            # v5: explicit constraint extraction — enumerate before composing
+            (
+                "First, silently extract every constraint from the instructions "
+                "into a numbered list (format, length, keywords, tone, structure). "
+                "Then compose a response that satisfies each numbered constraint. "
+                "Output only the final response, not the list."
+            ),
+            # v6: count-then-write — numeric constraints get pre-calculated
+            (
+                "If the instructions mention a specific count "
+                "(words, sentences, paragraphs, items), determine the exact "
+                "target number first. Write your response to hit that number "
+                "precisely. Count again to verify before finalizing."
+            ),
         ],
         "compression": [
             "Be concise while still satisfying every constraint. No padding.",
@@ -184,6 +205,36 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "Before outputting your final response, silently verify: "
                 "does it satisfy every stated constraint? "
                 "If not, correct it. Output only the compliant response."
+            ),
+            # v3: length-aware enforcement (word/sentence/paragraph counts)
+            (
+                "If the instructions specify a word count, sentence count, or "
+                "paragraph count, count carefully before finalizing. "
+                "Rewrite if any length constraint is violated. "
+                "Output only the final compliant response."
+            ),
+            # v4: format-strict enforcement (lists, JSON, sections, markdown)
+            (
+                "If the instructions require a specific format "
+                "(numbered list, bullet points, JSON, sections with headers, "
+                "all caps, lowercase, or markdown), "
+                "produce output in exactly that format. "
+                "Do not add any extra text, preamble, or commentary."
+            ),
+            # v5: keyword/content inclusion gate
+            (
+                "If the instructions require including or excluding specific "
+                "words, phrases, or content, verify each requirement is met. "
+                "Do not omit required keywords. "
+                "Do not include forbidden content. "
+                "Output only the compliant response."
+            ),
+            # v6: complete-response guarantee
+            (
+                "Your response must be complete — do not cut off mid-sentence "
+                "or leave any part of the task unfinished. "
+                "Verify every constraint is satisfied in the full response "
+                "before outputting it."
             ),
         ],
     },

@@ -361,10 +361,10 @@ class _DSPyCounter:
 def make_lm(provider: str, model: str, cache_dir: str | None):
     if provider == "openai":
         from ppg.lm.clients import OpenAIClient, OpenAIConfig, DiskCachedLMClient
-        lm = OpenAIClient(OpenAIConfig(model=model, temperature=0.0, max_tokens=512))
+        lm = OpenAIClient(OpenAIConfig(model=model, temperature=0.0, max_tokens=2048))
     elif provider == "anthropic":
         from ppg.lm.clients import AnthropicClient, AnthropicConfig, DiskCachedLMClient
-        lm = AnthropicClient(AnthropicConfig(model=model, temperature=0.0, max_tokens=512))
+        lm = AnthropicClient(AnthropicConfig(model=model, temperature=0.0, max_tokens=2048))
     else:
         raise ValueError(f"Unknown provider: {provider!r}")
 
