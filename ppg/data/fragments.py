@@ -237,6 +237,38 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "before outputting it."
             ),
         ],
+        "few_shot": [
+            # v1: word count constraint example
+            (
+                "Here is an example of correctly following constraints:\n\n"
+                "Instruction: Write a sentence about the ocean. "
+                "Your response must contain exactly 12 words.\n"
+                "Response: The vast ocean stretches endlessly, its blue waves "
+                "crashing against the shore.\n\n"
+                "Now follow ALL constraints in the task above with the same precision."
+            ),
+            # v2: format constraint example
+            (
+                "Here is an example of correctly following constraints:\n\n"
+                "Instruction: List three colors. Use a numbered list. "
+                "Each item must be one word.\n"
+                "Response:\n1. Red\n2. Blue\n3. Green\n\n"
+                "Now follow ALL constraints in the task above with the same precision."
+            ),
+            # v3: keyword inclusion + format example
+            (
+                "Here is an example of correctly following constraints:\n\n"
+                "Instruction: Write a paragraph about dogs. "
+                "Include the words 'loyal' and 'companion'. "
+                "Use exactly 2 sentences.\n"
+                "Response: Dogs are loyal animals that have been by our side "
+                "for thousands of years. Every dog owner knows the joy of having "
+                "such a devoted companion.\n\n"
+                "Now follow ALL constraints in the task above with the same precision."
+            ),
+            # v4: no few-shot (control variant — bandit learns whether examples help)
+            "Follow the constraints in the task directly.",
+        ],
     },
 
     # -----------------------------------------------------------------------
@@ -454,18 +486,33 @@ def _build_rich(b: PPGraphBuilder, pick, frags: dict) -> PPGraph:
 
     has_primer      = "domain_primer" in frags
     has_compression = "compression"   in frags
+    has_few_shot    = "few_shot"      in frags
 
     dp_id   = _add(FragmentType.DOMAIN_PRIMER,    frags["domain_primer"][0]) if has_primer else None
     tf_ids  = [_add(FragmentType.TASK_FRAMING,    t) for t in frags.get("task_framing",    [])]
+    fs_ids  = [_add(FragmentType.FEW_SHOT,        t) for t in frags.get("few_shot",        [])] if has_few_shot else []
     rs_ids  = [_add(FragmentType.REASONING_STYLE, t) for t in frags.get("reasoning_style", [])]
     oc_ids  = [_add(FragmentType.OUTPUT_CONTRACT, t) for t in frags.get("output_contract", [])]
     comp_id = _add(FragmentType.COMPRESSION,       frags["compression"][0]) if has_compression else None
 
+    # DP → TF
     for tf_id in tf_ids:
         if dp_id:
             b.connect(dp_id, tf_id)
-        for rs_id in rs_ids:
-            b.connect(tf_id, rs_id)
+
+    if fs_ids:
+        # TF → FS → RS (few-shot between task framing and reasoning)
+        for tf_id in tf_ids:
+            for fs_id in fs_ids:
+                b.connect(tf_id, fs_id)
+        for fs_id in fs_ids:
+            for rs_id in rs_ids:
+                b.connect(fs_id, rs_id)
+    else:
+        # TF → RS (no few-shot layer)
+        for tf_id in tf_ids:
+            for rs_id in rs_ids:
+                b.connect(tf_id, rs_id)
 
     for rs_id in rs_ids:
         for oc_id in oc_ids:

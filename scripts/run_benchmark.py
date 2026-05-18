@@ -410,10 +410,12 @@ def main():
                         help="PPG train episodes (default: 1000)")
     parser.add_argument("--finetune",type=int, default=200,
                         help="PPG finetune episodes (default: 200)")
-    parser.add_argument("--ppg-calibration", choices=["val_path", "none"],
+    parser.add_argument("--ppg-calibration", choices=["val_path", "dynamic", "none"],
                         default="val_path", dest="ppg_calibration",
-                        help="Deployment calibration for PPG after training "
-                             "(default: val_path)")
+                        help="Deployment calibration for PPG after training: "
+                             "val_path = fixed best path from validation, "
+                             "dynamic = greedy bandit routing per input, "
+                             "none = no calibration (default: val_path)")
     parser.add_argument("--ppg-path-candidates", type=int, default=0,
                         dest="ppg_path_candidates",
                         help="Number of utility-ranked paths to validate for PPG; "
@@ -740,6 +742,11 @@ def main():
             f"paths={selected.n_paths_scored}/{selected.total_paths}  "
             f"api_calls={ppg_calibration_calls}"
         )
+    elif args.ppg_calibration == "dynamic":
+        _step_rule(5, 6, "Using dynamic bandit routing (no fixed path calibration)...")
+        ppg_path = None
+        ppg_calibration_info = {"mode": "dynamic", "api_calls": 0}
+        _info("PPG will use greedy bandit routing per input at eval time")
     elif args.ppg_calibration == "val_path":
         _info("skipping PPG path calibration because validation split is empty")
 

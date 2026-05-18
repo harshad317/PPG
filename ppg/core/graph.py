@@ -29,6 +29,7 @@ from ppg.core.features import FEATURE_NAMES, FEATURE_DIM  # noqa: E402
 
 class FragmentType(str, Enum):
     TASK_FRAMING           = "task_framing"
+    FEW_SHOT               = "few_shot"
     REASONING_STYLE        = "reasoning_style"
     OUTPUT_CONTRACT        = "output_contract"
     UNCERTAINTY_ESCALATION = "uncertainty_escalation"
