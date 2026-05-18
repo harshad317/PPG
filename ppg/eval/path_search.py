@@ -63,9 +63,15 @@ def select_path_by_validation(
     max_candidates: Optional[int] = None,
     n_workers: int = 1,
     show_progress: bool = False,
+    early_stop_patience: int = 10,
 ) -> PathSearchResult:
     """
     Select the complete graph path with highest validation score.
+
+    Paths are ranked by learned utility before evaluation. When
+    ``max_candidates`` is set, only that many top-utility paths are scored.
+    Early stopping fires when the best score hasn't improved for
+    ``early_stop_patience`` consecutive paths.
 
     Ties prefer higher learned utility, then fewer tokens.  Test examples are
     never used; this is an optimizer/calibration step over the validation split.
@@ -90,6 +96,8 @@ def select_path_by_validation(
             bar = None
 
     best: Optional[PathSearchResult] = None
+    no_improve_count = 0
+    n_scored = 0
     for path in iterator:
         score, mean_tokens = score_path(
             graph=graph,
@@ -100,19 +108,25 @@ def select_path_by_validation(
             constraint_checker=constraint_checker,
             n_workers=n_workers,
         )
+        n_scored += 1
         candidate = PathSearchResult(
             path=path,
             val_score=score,
             mean_tokens=mean_tokens,
             utility=path_utility(graph, path),
             n_examples=len(examples),
-            n_paths_scored=len(paths),
+            n_paths_scored=n_scored,
             total_paths=total_paths,
         )
         if best is None or _is_better(candidate, best):
             best = candidate
+            no_improve_count = 0
+        else:
+            no_improve_count += 1
         if bar is not None:
             bar.set_postfix(best=f"{best.val_score:.3f}")
+        if early_stop_patience > 0 and no_improve_count >= early_stop_patience:
+            break
 
     if bar is not None:
         bar.close()

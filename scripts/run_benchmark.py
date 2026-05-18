@@ -705,9 +705,12 @@ def main():
         _step_rule(5, 6, "Calibrating PPG deployment path on validation split...")
         from ppg.eval.path_search import select_path_by_validation
 
-        max_candidates = (
-            None if args.ppg_path_candidates <= 0 else args.ppg_path_candidates
-        )
+        if args.ppg_path_candidates > 0:
+            max_candidates = args.ppg_path_candidates
+        elif use_prod:
+            max_candidates = 20
+        else:
+            max_candidates = None
         lm.reset()
         t_cal = time.time()
         selected = select_path_by_validation(
