@@ -407,6 +407,7 @@ def build_graph(
     benchmark: str,
     topology:  Topology = "rich",
     variant:   int = 0,
+    include_few_shot: bool = False,
 ) -> PPGraph:
     """
     Construct a PPGraph from the seed fragment library.
@@ -452,7 +453,7 @@ def build_graph(
     if topology == "lean":
         return _build_lean(b, pick)
     elif topology == "rich":
-        return _build_rich(b, pick, frags)
+        return _build_rich(b, pick, frags, include_few_shot=include_few_shot)
     else:
         raise ValueError(f"Unknown topology: {topology!r}. Use 'lean' or 'rich'.")
 
@@ -466,7 +467,7 @@ def _build_lean(b: PPGraphBuilder, pick) -> PPGraph:
     return b.build()
 
 
-def _build_rich(b: PPGraphBuilder, pick, frags: dict) -> PPGraph:
+def _build_rich(b: PPGraphBuilder, pick, frags: dict, include_few_shot: bool = False) -> PPGraph:
     """
     Multi-variant parallel graph — bandit chooses one variant at each level.
 
@@ -486,7 +487,7 @@ def _build_rich(b: PPGraphBuilder, pick, frags: dict) -> PPGraph:
 
     has_primer      = "domain_primer" in frags
     has_compression = "compression"   in frags
-    has_few_shot    = "few_shot"      in frags
+    has_few_shot    = include_few_shot and "few_shot" in frags
 
     dp_id   = _add(FragmentType.DOMAIN_PRIMER,    frags["domain_primer"][0]) if has_primer else None
     tf_ids  = [_add(FragmentType.TASK_FRAMING,    t) for t in frags.get("task_framing",    [])]

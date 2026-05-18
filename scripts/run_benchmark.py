@@ -460,6 +460,8 @@ def main():
                         help="Disable failure-mode branching (even in --production)")
     parser.add_argument("--no-pareto", action="store_true", dest="no_pareto",
                         help="Use scalarized reward instead of Pareto (even in --production)")
+    parser.add_argument("--few-shot", action="store_true", dest="few_shot",
+                        help="Include few-shot example fragments in the graph (ifeval/ifbench only)")
     parser.add_argument("--ppg-reflection-model", default=None, dest="ppg_reflection_model",
                         help="LM for PPG reflection/evolution (default: same as --model)")
     args = parser.parse_args()
@@ -529,7 +531,8 @@ def main():
     use_prod = args.production
 
     graph_key = _GRAPH_MAP[bench]
-    graph     = build_graph(graph_key, topology="rich")
+    graph     = build_graph(graph_key, topology="rich",
+                            include_few_shot=args.few_shot)
     policy    = LinUCBPolicy(graph)
 
     feat_extractor = FeatureExtractor.production() if use_prod else FeatureExtractor()
