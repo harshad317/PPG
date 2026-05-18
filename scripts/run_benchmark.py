@@ -74,6 +74,7 @@ from pathlib import Path
 
 _GRAPH_MAP: dict[str, str] = {
     "gsm8k":         "gsm8k",
+    "ifbench":       "ifbench",
     "hotpotqa":      "hotpotqa",
     "drop":          "hotpotqa",   # reading-comprehension domain
     "mbpp":          "mbpp",
@@ -109,7 +110,7 @@ def load_splits(
     """
     from ppg.eval.benchmarks.loaders import (
         ARCChallengeLoader, BigBenchHardLoader, DROPLoader, GSM8KLoader,
-        HotpotQALoader, LiveBenchMathLoader,
+        HotpotQALoader, IFBenchLoader, LiveBenchMathLoader,
         MBPPLoader, MMLULoader, TruthfulQALoader,
     )
     from ppg.eval.harness import EvalExample
@@ -152,6 +153,18 @@ def load_splits(
         test   = _cap(loader.load("test",  seed=seed + 2), n_test)
         metric = loader.recommended_metric()
         objective = "Maximize exact-match accuracy on multi-step arithmetic word problems."
+
+    # -----------------------------------------------------------------------
+    elif benchmark == "ifbench":
+        loader = IFBenchLoader()
+        all_ex = loader.load("train", seed=seed)
+        train, val, test = _split_single(all_ex, n_train, n_val, n_test)
+        metric = loader.recommended_metric()
+        constraint_checker = loader.recommended_constraint_checker()
+        objective = (
+            "Maximize constraint satisfaction — responses must include required "
+            "keywords and satisfy all stated format constraints."
+        )
 
     # -----------------------------------------------------------------------
     elif benchmark == "hotpotqa":
@@ -527,7 +540,7 @@ def main():
     )
     assembler = PromptAssembler(graph, structured=exec_config.structured_prompts)
 
-    constraint_as_task = False
+    constraint_as_task = bench == "ifbench"
 
     # --- Logger ---
     from ppg.logging_utils import PPGLogger, NullLogger, LogConfig

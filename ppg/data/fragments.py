@@ -1,8 +1,9 @@
 """
 Seed fragment library for PPG experiments.
 
-Contains curated prompt fragments for the 7 core benchmarks:
+Contains curated prompt fragments for the 8 core benchmarks:
     GSM8K         — grade-school math (multi-step arithmetic)
+    IFBench       — instruction following with constraint satisfaction
     TruthfulQA    — factual accuracy under adversarial framing
     BIG-Bench Hard— challenging multi-step reasoning
     ARC-Challenge — science multiple-choice questions
@@ -138,6 +139,176 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
             ),
             # v4: control variant
             "Solve the problem step by step and give the final numeric answer.",
+        ],
+    },
+
+    # -----------------------------------------------------------------------
+    # IFBench — instruction following with constraint satisfaction
+    # -----------------------------------------------------------------------
+    "ifbench": {
+        "task_framing": [
+            # v1: direct compliance framing
+            (
+                "Complete the following task. "
+                "Read ALL instructions carefully before writing your response.\n\n"
+                "{input}"
+            ),
+            # v2: explicit constraint decomposition before responding
+            (
+                "You will respond to the prompt below. "
+                "Silently identify every explicit constraint "
+                "(format, length, style, content). "
+                "Then write only the response that satisfies ALL of them.\n\n"
+                "{input}"
+            ),
+            # v3: strict compliance mode
+            (
+                "Follow every instruction below exactly as stated. "
+                "Treat each requirement as a hard constraint that cannot be omitted or approximated.\n\n"
+                "{input}"
+            ),
+            # v4: constraint-type tagging
+            (
+                "Read the prompt below and tag each constraint by type "
+                "(keyword / format / length / tone / language / structure). "
+                "Then write a response satisfying every tagged constraint.\n\n"
+                "{input}"
+            ),
+        ],
+        "domain_primer": [
+            (
+                "You are an instruction-following assistant. "
+                "Your task is to comply precisely with every stated constraint. "
+                "Constraints may include: word count, formatting (bullet points, numbered lists, "
+                "headers, JSON), language, tone, inclusion or exclusion of specific content, "
+                "and structural requirements."
+            ),
+            (
+                "You are a constraint-satisfaction engine. "
+                "Every instruction contains explicit requirements that must be met exactly. "
+                "Never approximate a constraint — if it says 50 words, write exactly 50. "
+                "If it says JSON, output valid JSON with no surrounding text. "
+                "Precision over creativity."
+            ),
+        ],
+        "reasoning_style": [
+            # v1: numbered checklist audit before writing
+            (
+                "Before responding, silently check each constraint one by one. "
+                "Use that checklist only to guide the final answer; do not output "
+                "the checklist or any analysis."
+            ),
+            # v2: silent planning
+            (
+                "Carefully identify every constraint in the instructions. "
+                "Plan your response to satisfy each one. "
+                "Then write the response."
+            ),
+            # v3: write first, then self-verify and correct
+            (
+                "Write your response. "
+                "Then re-read every constraint and verify your response meets each one. "
+                "If any constraint is violated, rewrite the response."
+            ),
+            # v4: constraint-priority ordering
+            (
+                "Rank the constraints from hardest to easiest to satisfy. "
+                "Build your response starting from the hardest constraint, "
+                "then layer in the remaining ones. "
+                "Output only the final response."
+            ),
+            # v5: explicit constraint extraction
+            (
+                "First, silently extract every constraint from the instructions "
+                "into a numbered list (format, length, keywords, tone, structure). "
+                "Then compose a response that satisfies each numbered constraint. "
+                "Output only the final response, not the list."
+            ),
+            # v6: count-then-write
+            (
+                "If the instructions mention a specific count "
+                "(words, sentences, paragraphs, items), determine the exact "
+                "target number first. Write your response to hit that number "
+                "precisely. Count again to verify before finalizing."
+            ),
+        ],
+        "compression": [
+            "Be concise while still satisfying every constraint. No padding.",
+        ],
+        "output_contract": [
+            # v1: general compliance reminder
+            (
+                "Your response must satisfy every constraint in the instructions. "
+                "Do not include any text outside the requested response format."
+            ),
+            # v2: self-audit gate before finalizing
+            (
+                "Before outputting your final response, silently verify: "
+                "does it satisfy every stated constraint? "
+                "If not, correct it. Output only the compliant response."
+            ),
+            # v3: length-aware enforcement
+            (
+                "If the instructions specify a word count, sentence count, or "
+                "paragraph count, count carefully before finalizing. "
+                "Rewrite if any length constraint is violated. "
+                "Output only the final compliant response."
+            ),
+            # v4: format-strict enforcement
+            (
+                "If the instructions require a specific format "
+                "(numbered list, bullet points, JSON, sections with headers, "
+                "all caps, lowercase, or markdown), "
+                "produce output in exactly that format. "
+                "Do not add any extra text, preamble, or commentary."
+            ),
+            # v5: keyword/content inclusion gate
+            (
+                "If the instructions require including or excluding specific "
+                "words, phrases, or content, verify each requirement is met. "
+                "Do not omit required keywords. "
+                "Do not include forbidden content. "
+                "Output only the compliant response."
+            ),
+            # v6: complete-response guarantee
+            (
+                "Your response must be complete — do not cut off mid-sentence "
+                "or leave any part of the task unfinished. "
+                "Verify every constraint is satisfied in the full response "
+                "before outputting it."
+            ),
+        ],
+        "few_shot": [
+            # v1: word count constraint example
+            (
+                "Here is an example of correctly following constraints:\n\n"
+                "Instruction: Write a sentence about the ocean. "
+                "Your response must contain exactly 12 words.\n"
+                "Response: The vast ocean stretches endlessly, its blue waves "
+                "crashing against the shore.\n\n"
+                "Now follow ALL constraints in the task above with the same precision."
+            ),
+            # v2: format constraint example
+            (
+                "Here is an example of correctly following constraints:\n\n"
+                "Instruction: List three colors. Use a numbered list. "
+                "Each item must be one word.\n"
+                "Response:\n1. Red\n2. Blue\n3. Green\n\n"
+                "Now follow ALL constraints in the task above with the same precision."
+            ),
+            # v3: keyword inclusion + format example
+            (
+                "Here is an example of correctly following constraints:\n\n"
+                "Instruction: Write a paragraph about dogs. "
+                "Include the words 'loyal' and 'companion'. "
+                "Use exactly 2 sentences.\n"
+                "Response: Dogs are loyal animals that have been by our side "
+                "for thousands of years. Every dog owner knows the joy of having "
+                "such a devoted companion.\n\n"
+                "Now follow ALL constraints in the task above with the same precision."
+            ),
+            # v4: control variant
+            "Follow the constraints in the task directly.",
         ],
     },
 
@@ -725,7 +896,7 @@ def build_graph(
 
     Parameters
     ----------
-    benchmark : "gsm8k" | "truthfulqa" | "bigbench_hard" | "arc_challenge" | "livebench_math" | "hotpotqa" | "mbpp"
+    benchmark : "gsm8k" | "ifbench" | "truthfulqa" | "bigbench_hard" | "arc_challenge" | "livebench_math" | "hotpotqa" | "mbpp"
     topology  : "lean"  → linear chain (3 nodes, no optional branches)
                 "rich"  → extended graph with DOMAIN_PRIMER and COMPRESSION
     variant   : which template variant to use (0 = primary)

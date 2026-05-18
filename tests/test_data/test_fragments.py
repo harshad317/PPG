@@ -14,7 +14,7 @@ from ppg.data.fragments import (
 )
 
 
-BENCHMARKS = ["gsm8k", "hotpotqa", "mbpp", "truthfulqa", "bigbench_hard", "arc_challenge", "livebench_math"]
+BENCHMARKS = ["gsm8k", "ifbench", "hotpotqa", "mbpp", "truthfulqa", "bigbench_hard", "arc_challenge", "livebench_math"]
 
 REQUIRED_TYPES = {FragmentType.TASK_FRAMING, FragmentType.OUTPUT_CONTRACT}
 
