@@ -694,6 +694,13 @@ def main():
               f"task_acc={stats.task_accuracy('train'):.4f}  "
               f"api_calls={train_api_calls}")
 
+        # Show cache stats so users can distinguish real API cost from counted calls
+        _lm_inner = lm._lm if hasattr(lm, '_lm') else lm
+        if hasattr(_lm_inner, 'n_hits'):
+            _info(f"cache: {_lm_inner.n_hits} hits, {_lm_inner.n_misses} misses, "
+                  f"hit_rate={_lm_inner.hit_rate:.1%}  "
+                  f"(real API calls ≈ {_lm_inner.n_misses})")
+
         # --- Calibrate ---
         ppg_path = None
         ppg_calibration_calls = 0

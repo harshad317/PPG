@@ -94,6 +94,13 @@ class TrainerConfig:
     # removing it saves ~2 LM calls/episode with negligible score impact.
     skip_variance_train: bool = True
 
+    # Disable self-consistency escalation during training.
+    # With temperature=0 + disk cache, extra samples are always identical
+    # to the first response (cache hit), so sc_disagreement is always 0
+    # and escalation never triggers. Skipping avoids ~2 phantom LM calls
+    # per execute() that inflate the count without affecting training.
+    skip_escalation_train: bool = True
+
     # Early stopping: halt a phase when running reward plateaus.
     # 0 = disabled. When > 0, stops if mean reward over the last
     # `early_stop_window` episodes improves less than `early_stop_eps`
@@ -142,8 +149,9 @@ class TrainerConfig:
             p_ablate_train=0.15,
             p_ablate_finetune=0.0,
             skip_variance_train=True,
+            skip_escalation_train=True,
             n_workers=4,
-            k_grpo_paths=4,
+            k_grpo_paths=2,
         )
         defaults.update(overrides)
         return cls(**defaults)
@@ -298,12 +306,17 @@ class PPGTrainer:
         if self.cfg.skip_variance_train:
             self.reward.cfg.skip_variance = True
 
+        original_escalation = self.executor.cfg.escalation_enabled
+        if self.cfg.skip_escalation_train:
+            self.executor.cfg.escalation_enabled = False
+
         self._run_phase(dataset, self.cfg.n_warmup_episodes,
                         phase="warmup", train_mode=False, desc="warmup  ")
 
         self.executor.selector = original_selector
         self.credit.cfg.p_ablate = original_p
         self.reward.cfg.skip_variance = original_skip_var
+        self.executor.cfg.escalation_enabled = original_escalation
         self.logger.log_phase_end("warmup")
 
     def _run_train(self, dataset: list[TrainingExample]) -> None:
@@ -320,12 +333,17 @@ class PPGTrainer:
         if self.cfg.skip_variance_train:
             self.reward.cfg.skip_variance = True
 
+        original_escalation = self.executor.cfg.escalation_enabled
+        if self.cfg.skip_escalation_train:
+            self.executor.cfg.escalation_enabled = False
+
         self._run_phase(dataset, self.cfg.n_train_episodes,
                         phase="train", train_mode=True, desc="train   ")
 
         self.policy.alpha = original_alpha
         self.credit.cfg.p_ablate = original_p
         self.reward.cfg.skip_variance = original_skip_var
+        self.executor.cfg.escalation_enabled = original_escalation
 
         self._log_arm_stats()
         self._log_node_utilities()
@@ -345,12 +363,17 @@ class PPGTrainer:
         if self.cfg.skip_variance_train:
             self.reward.cfg.skip_variance = True
 
+        original_escalation = self.executor.cfg.escalation_enabled
+        if self.cfg.skip_escalation_train:
+            self.executor.cfg.escalation_enabled = False
+
         self._run_phase(dataset, self.cfg.n_finetune_episodes,
                         phase="finetune", train_mode=True, desc="finetune")
 
         self.policy.alpha = original_alpha
         self.credit.cfg.p_ablate = original_p
         self.reward.cfg.skip_variance = original_skip_var
+        self.executor.cfg.escalation_enabled = original_escalation
 
         self._log_arm_stats()
         self._log_node_utilities()
