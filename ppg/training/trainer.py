@@ -151,7 +151,7 @@ class TrainerConfig:
             skip_variance_train=True,
             skip_escalation_train=True,
             n_workers=4,
-            k_grpo_paths=2,
+            k_grpo_paths=4,
         )
         defaults.update(overrides)
         return cls(**defaults)
