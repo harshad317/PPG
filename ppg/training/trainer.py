@@ -85,9 +85,21 @@ class TrainerConfig:
     alpha_finetune: float = 0.1
 
     # Credit assignment probabilities per phase
-    p_ablate_warmup:    float = 0.10
-    p_ablate_train:     float = 0.20
-    p_ablate_finetune:  float = 0.10
+    p_ablate_warmup:    float = 0.15
+    p_ablate_train:     float = 0.10
+    p_ablate_finetune:  float = 0.0
+
+    # Skip perturbation-variance LM calls during training.
+    # Variance contributes ~0.001-0.005 to reward vs r_task of 0-1;
+    # removing it saves ~2 LM calls/episode with negligible score impact.
+    skip_variance_train: bool = True
+
+    # Early stopping: halt a phase when running reward plateaus.
+    # 0 = disabled. When > 0, stops if mean reward over the last
+    # `early_stop_window` episodes improves less than `early_stop_eps`
+    # compared to the preceding window.
+    early_stop_window:  int   = 0
+    early_stop_eps:     float = 0.005
 
     # Checkpointing (disabled when None)
     checkpoint_dir:   Optional[str] = None
@@ -115,8 +127,10 @@ class TrainerConfig:
         """Tuned config for maximum benchmark performance.
 
         5k train episodes gives LinUCB enough signal to converge on rich graphs.
-        Higher p_ablate_train gives more LOO marginal signals per edge.
+        Higher p_ablate_warmup front-loads fragment utility discovery.
         Higher alpha_train encourages broader edge coverage during exploration.
+        skip_variance_train=True avoids ~2-3 LM calls/episode on a negligible
+        reward component, cutting training API cost by ~60%.
         """
         defaults = dict(
             n_warmup_episodes=500,
@@ -124,9 +138,10 @@ class TrainerConfig:
             n_finetune_episodes=1000,
             alpha_train=0.8,
             alpha_finetune=0.05,
-            p_ablate_warmup=0.15,
-            p_ablate_train=0.40,
-            p_ablate_finetune=0.15,
+            p_ablate_warmup=0.20,
+            p_ablate_train=0.15,
+            p_ablate_finetune=0.0,
+            skip_variance_train=True,
             n_workers=4,
             k_grpo_paths=4,
         )
@@ -279,11 +294,16 @@ class PPGTrainer:
         original_p = self.credit.cfg.p_ablate
         self.credit.cfg.p_ablate = self.cfg.p_ablate_warmup
 
+        original_skip_var = self.reward.cfg.skip_variance
+        if self.cfg.skip_variance_train:
+            self.reward.cfg.skip_variance = True
+
         self._run_phase(dataset, self.cfg.n_warmup_episodes,
                         phase="warmup", train_mode=False, desc="warmup  ")
 
         self.executor.selector = original_selector
         self.credit.cfg.p_ablate = original_p
+        self.reward.cfg.skip_variance = original_skip_var
         self.logger.log_phase_end("warmup")
 
     def _run_train(self, dataset: list[TrainingExample]) -> None:
@@ -296,11 +316,16 @@ class PPGTrainer:
         original_p = self.credit.cfg.p_ablate
         self.credit.cfg.p_ablate = self.cfg.p_ablate_train
 
+        original_skip_var = self.reward.cfg.skip_variance
+        if self.cfg.skip_variance_train:
+            self.reward.cfg.skip_variance = True
+
         self._run_phase(dataset, self.cfg.n_train_episodes,
                         phase="train", train_mode=True, desc="train   ")
 
         self.policy.alpha = original_alpha
         self.credit.cfg.p_ablate = original_p
+        self.reward.cfg.skip_variance = original_skip_var
 
         self._log_arm_stats()
         self._log_node_utilities()
@@ -316,11 +341,16 @@ class PPGTrainer:
         original_p = self.credit.cfg.p_ablate
         self.credit.cfg.p_ablate = self.cfg.p_ablate_finetune
 
+        original_skip_var = self.reward.cfg.skip_variance
+        if self.cfg.skip_variance_train:
+            self.reward.cfg.skip_variance = True
+
         self._run_phase(dataset, self.cfg.n_finetune_episodes,
                         phase="finetune", train_mode=True, desc="finetune")
 
         self.policy.alpha = original_alpha
         self.credit.cfg.p_ablate = original_p
+        self.reward.cfg.skip_variance = original_skip_var
 
         self._log_arm_stats()
         self._log_node_utilities()
@@ -359,12 +389,18 @@ class PPGTrainer:
     ) -> None:
         bar = _make_bar(cycle, desc=desc, enabled=self.cfg.show_progress, total=total)
         run_r = run_t = 0.0
+        recent_rewards: list[float] = []
+        w = self.cfg.early_stop_window
         for i, example in enumerate(bar):
             result = self._run_episode(example, phase=phase, train_mode=train_mode)
             run_r  = (run_r * i + result.reward.total) / (i + 1)
             run_t  = (run_t * i + result.reward.task)  / (i + 1)
             if self.cfg.show_progress and hasattr(bar, "set_postfix"):
                 bar.set_postfix(reward=f"{run_r:.3f}", task=f"{run_t:.2f}")
+            if w > 0:
+                recent_rewards.append(result.reward.total)
+                if _should_early_stop(recent_rewards, w, self.cfg.early_stop_eps):
+                    break
 
     def _run_phase_parallel(
         self,
@@ -385,19 +421,21 @@ class PPGTrainer:
         run_r = run_t = 0.0
         episode_i = 0
         batch_size = self.cfg.n_workers
+        recent_rewards: list[float] = []
+        w = self.cfg.early_stop_window
+        stopped = False
 
         with ThreadPoolExecutor(max_workers=batch_size) as pool:
-            # Slice cycle into mini-batches
             for batch_start in range(0, len(cycle), batch_size):
+                if stopped:
+                    break
                 batch = cycle[batch_start:batch_start + batch_size]
 
-                # Submit all collections in this batch concurrently
                 futures = [
                     pool.submit(self._collect, ex, train_mode)
                     for ex in batch
                 ]
 
-                # Wait in submission order so updates are deterministic
                 for example, future in zip(batch, futures):
                     trace, reward_components = future.result()
                     result = self._apply_update(
@@ -408,6 +446,11 @@ class PPGTrainer:
                     episode_i += 1
                     _bar_update(bar, reward=f"{run_r:.3f}", task=f"{run_t:.2f}",
                                 enabled=self.cfg.show_progress)
+                    if w > 0:
+                        recent_rewards.append(result.reward.total)
+                        if _should_early_stop(recent_rewards, w, self.cfg.early_stop_eps):
+                            stopped = True
+                            break
 
         _bar_close(bar, enabled=self.cfg.show_progress)
 
@@ -628,6 +671,23 @@ class PPGTrainer:
             f"policy_{phase}_ep{self._episode:06d}.npz",
         )
         self.policy.save(path)
+
+
+# ---------------------------------------------------------------------------
+# Early stopping
+# ---------------------------------------------------------------------------
+
+def _should_early_stop(
+    rewards: list[float],
+    window:  int,
+    eps:     float,
+) -> bool:
+    """True when the last two windows show < eps improvement in mean reward."""
+    if len(rewards) < 2 * window:
+        return False
+    prev = float(np.mean(rewards[-2 * window : -window]))
+    curr = float(np.mean(rewards[-window:]))
+    return curr - prev < eps
 
 
 # ---------------------------------------------------------------------------

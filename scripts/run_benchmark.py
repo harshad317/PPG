@@ -592,7 +592,7 @@ def main():
         if use_prod:
             credit_cfg.skip_source = False
             credit_cfg.skip_terminal = False
-            credit_cfg.p_ablate = 0.25
+            credit_cfg.p_ablate = 0.15
         credit = CreditAssigner(
             lm=lm,
             assembler=assembler,
