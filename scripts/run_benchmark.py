@@ -452,8 +452,6 @@ def main():
                         help="Use scalarized reward instead of Pareto (even in --production)")
     parser.add_argument("--few-shot", action="store_true", dest="few_shot",
                         help="Include few-shot example fragments in the graph")
-    parser.add_argument("--structured-prompts", action="store_true", dest="structured_prompts",
-                        help="Add markdown section headers to assembled prompts (auto-enabled by --production)")
     parser.add_argument("--ppg-reflection-model", default=None, dest="ppg_reflection_model",
                         help="LM for PPG reflection/evolution (default: same as --model)")
     args = parser.parse_args()
@@ -529,8 +527,6 @@ def main():
 
     feat_extractor = FeatureExtractor.production() if use_prod else FeatureExtractor()
     exec_config    = ExecutorConfig.production() if use_prod else ExecutorConfig(escalation_enabled=False)
-    if args.structured_prompts and not use_prod:
-        exec_config.structured_prompts = True
     executor  = PPGExecutor(
         graph=graph,
         selector=policy,
@@ -538,7 +534,7 @@ def main():
         feature_extractor=feat_extractor,
         config=exec_config,
     )
-    assembler = PromptAssembler(graph, structured=exec_config.structured_prompts)
+    assembler = PromptAssembler(graph)
 
     constraint_as_task = bench == "ifbench"
 
