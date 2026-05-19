@@ -310,7 +310,7 @@ class EvalHarness:
 
     def __init__(
         self,
-        executor:            PPGExecutor,
+        executor:            Optional[PPGExecutor],
         metric:              TaskMetric,
         lm:                  LMClient,
         config:              Optional[EvalConfig] = None,

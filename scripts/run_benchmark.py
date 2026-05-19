@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-PPG full benchmark runner.
+PPG benchmark runner.
 
-Trains PPG from scratch on a benchmark's training split, then evaluates it
-against all baselines on the test split. MIPROv2 and GEPA are compiled in
-"heavy" mode (maximum search budget).
+Each method runs independently. By default (no flags), trains PPG from scratch
+and evaluates it alongside internal baselines. Use --run-mipro or --run-gepa
+to run those methods standalone. Use --include-ppg to combine PPG with external
+methods in a single run.
 
-Baselines evaluated
--------------------
-ppg            : trained PPG, optionally validation-calibrated to the best path
-flat_all       : all graph nodes concatenated, no routing
-static_best    : greedy highest-utility fixed path, no routing
-random_gating  : random node selection, no learning
-highest_utility: greedy on learned utility scores, no UCB
-miprov2        : MIPROv2 (DSPy) — requires --run-mipro + dspy-ai installed
-gepa           : GEPA (DSPy) — requires --run-gepa + dspy-ai installed
+Methods
+-------
+ppg (default)  : PPG + internal baselines (flat_all, static_best, random_gating, highest_utility)
+--run-mipro    : MIPROv2 (DSPy, auto='heavy') — standalone, no PPG training
+--run-gepa     : GEPA (DSPy) — standalone, no PPG training
+--include-ppg  : Add PPG training + eval when using --run-mipro/--run-gepa
 
 Graph fallback map (benchmarks without dedicated fragments use the closest domain)
 ----------------------------------------------------------------------------------
@@ -23,34 +21,23 @@ mmlu         → gsm8k graph      (MCQ reasoning)
 
 Usage
 -----
-# Quick smoke test (no external optimizers):
-python scripts/run_benchmark.py gsm8k \\
-    --model gpt-4o-mini
+# PPG only (default):
+python scripts/run_benchmark.py gsm8k --model gpt-4.1-mini --production
 
-# Full run with all baselines (uses defaults: 100 train / 50 val / 500 test):
-python scripts/run_benchmark.py gsm8k \\
-    --model gpt-4o-mini --run-mipro --run-gepa --reflection-model gpt-4o
+# MIPROv2 only:
+python scripts/run_benchmark.py gsm8k --model gpt-4.1-mini --run-mipro
 
-# TruthfulQA:
-python scripts/run_benchmark.py truthfulqa \\
-    --model gpt-4o-mini --run-mipro --run-gepa
+# GEPA only:
+python scripts/run_benchmark.py gsm8k --model gpt-4.1-mini --run-gepa \\
+    --reflection-model gpt-4o
 
-# ARC-Challenge with few-shot examples:
-python scripts/run_benchmark.py arc_challenge \\
-    --model gpt-4o-mini --few-shot --run-mipro --run-gepa
+# All three together:
+python scripts/run_benchmark.py gsm8k --model gpt-4.1-mini --production \\
+    --run-mipro --run-gepa --include-ppg --reflection-model gpt-4o
 
 # BigBenchHard (specific task):
-python scripts/run_benchmark.py bigbench_hard \\
-    --model gpt-4o-mini --bbh-task causal_judgement \\
-    --run-mipro --run-gepa
-
-# LiveBench Math:
-python scripts/run_benchmark.py livebench_math \\
-    --model gpt-4o-mini --few-shot
-
-# MMLU (specific subject):
-python scripts/run_benchmark.py mmlu \\
-    --model gpt-4o-mini --mmlu-subject abstract_algebra
+python scripts/run_benchmark.py bigbench_hard --model gpt-4.1-mini \\
+    --bbh-task causal_judgement --run-gepa
 
 Environment variables
 ---------------------
@@ -411,9 +398,11 @@ def main():
                         help="Number of utility-ranked paths to validate for PPG; "
                              "0 searches all complete paths (default: 0)")
     parser.add_argument("--run-mipro", action="store_true", dest="run_mipro",
-                        help="Compile and run MIPROv2 baseline (requires dspy-ai)")
+                        help="Run MIPROv2 only (requires dspy-ai). Skips PPG unless --include-ppg.")
     parser.add_argument("--run-gepa",  action="store_true", dest="run_gepa",
-                        help="Compile and run GEPA baseline (requires gepa)")
+                        help="Run GEPA only (requires gepa). Skips PPG unless --include-ppg.")
+    parser.add_argument("--include-ppg", action="store_true", dest="include_ppg",
+                        help="Include PPG training + eval when using --run-mipro/--run-gepa")
     parser.add_argument("--gepa-calls", type=int, default=500, dest="gepa_calls",
                         help="GEPA max_metric_calls heavy budget (default: 500)")
     parser.add_argument("--bbh-task",    default="causal_judgement", dest="bbh_task",
@@ -459,6 +448,12 @@ def main():
     show_progress = not args.quiet
     cache_dir     = None if args.no_cache else args.cache_dir
     bench         = args.benchmark
+
+    # Determine which methods to run.
+    # --run-gepa / --run-mipro without --include-ppg → external only, skip PPG.
+    # Default (no external flags) → PPG + internal baselines.
+    has_external = args.run_mipro or args.run_gepa
+    run_ppg = args.include_ppg or not has_external
 
     try:
         from rich.console import Console as _Console
@@ -507,40 +502,24 @@ def main():
     lm = CountingLMClient(make_lm(args.provider, args.model, cache_dir))
 
     # ------------------------------------------------------------------
-    # 3. Build graph + PPG components
+    # 3. Build graph (needed by all methods for seed prompt)
     # ------------------------------------------------------------------
-    _step_rule(3, 6, "Building PPG graph and components...")
+    _step_rule(1, 4, "Building graph...")
     from ppg.data.fragments import build_graph
-    from ppg.bandits.linucb import LinUCBPolicy
-    from ppg.core import ExecutorConfig, FeatureExtractor, PPGExecutor
     from ppg.core.executor import PromptAssembler
-    from ppg.training.credit import CreditAssigner, CreditAssignerConfig
-    from ppg.training.reward import RewardComputer, RewardConfig
-    from ppg.training.trainer import PPGTrainer, TrainerConfig
 
     use_prod = args.production
 
     graph_key = _GRAPH_MAP[bench]
     graph     = build_graph(graph_key, topology="rich",
                             include_few_shot=args.few_shot)
-    policy    = LinUCBPolicy(graph)
-
-    feat_extractor = FeatureExtractor.production() if use_prod else FeatureExtractor()
-    exec_config    = ExecutorConfig.production() if use_prod else ExecutorConfig(escalation_enabled=False)
-    executor  = PPGExecutor(
-        graph=graph,
-        selector=policy,
-        lm=lm,
-        feature_extractor=feat_extractor,
-        config=exec_config,
-    )
     assembler = PromptAssembler(graph)
 
     constraint_as_task = bench == "ifbench"
 
     # --- Logger ---
     from ppg.logging_utils import PPGLogger, NullLogger, LogConfig
-    if args.log_dir or use_prod:
+    if args.log_dir or (use_prod and run_ppg):
         log_ts = time.strftime("%Y%m%d_%H%M%S")
         log_dir = args.log_dir or f"ppg_logs/{bench}_{log_ts}"
         ppg_logger = PPGLogger(LogConfig(
@@ -553,256 +532,262 @@ def main():
     else:
         ppg_logger = NullLogger()
 
-    # --- Reward (Pareto or scalarized) ---
-    reward_cfg_base = dict(
-        constraint_as_task=constraint_as_task,
-        skip_variance=constraint_as_task,
-    )
-    if use_prod and not args.no_pareto:
-        from ppg.training.reward import ParetoRewardComputer
-        prod_cfg = RewardConfig.production(**reward_cfg_base)
-        reward = ParetoRewardComputer(
-            task_metric=metric,
-            lm=lm,
-            assembler=assembler,
-            constraint_checker=constraint_checker,
-            config=prod_cfg,
-            logger=ppg_logger,
-        )
-        _info("reward: ParetoRewardComputer")
-    else:
-        rcfg = RewardConfig.production(**reward_cfg_base) if use_prod else RewardConfig(**reward_cfg_base)
-        reward = RewardComputer(
-            task_metric=metric,
-            lm=lm,
-            assembler=assembler,
-            constraint_checker=constraint_checker,
-            config=rcfg,
-        )
-
-    credit_cfg = CreditAssignerConfig()
-    if use_prod:
-        credit_cfg.skip_source = False
-        credit_cfg.skip_terminal = False
-        credit_cfg.p_ablate = 0.25
-    credit = CreditAssigner(
-        lm=lm,
-        assembler=assembler,
-        task_metric=metric,
-        config=credit_cfg,
-        constraint_checker=constraint_checker,
-        constraint_as_task=constraint_as_task,
-    )
-
-    # --- Reflection / Evolution / Branching (production mode) ---
-    reflection_loop = None
-    evolver = None
-    brancher = None
-
-    if use_prod:
-        refl_lm = lm
-        if args.ppg_reflection_model:
-            from ppg.lm.clients import CountingLMClient
-            refl_lm = CountingLMClient(make_lm(args.provider, args.ppg_reflection_model, cache_dir))
-
-        if not args.no_reflection:
-            from ppg.training.reflection import ReflectionLoop, ReflectionConfig
-            reflection_loop = ReflectionLoop(
-                lm=refl_lm,
-                config=ReflectionConfig(
-                    enabled=True,
-                    score_threshold=0.75,
-                    reflect_fraction=0.5,
-                ),
-                constraint_checker=constraint_checker,
-            )
-            _info("reflection: enabled (threshold=0.75, fraction=0.5)")
-
-        if not args.no_evolution:
-            from ppg.training.evolution import FragmentEvolver, EvolutionConfig
-            evolver = FragmentEvolver(
-                lm=refl_lm,
-                config=EvolutionConfig(enabled=True, evolve_every=500),
-                reflection=reflection_loop,
-                benchmark=bench,
-            )
-            _info("evolution: enabled (every 500 episodes)")
-
-        if not args.no_branching and reflection_loop is not None:
-            from ppg.training.branching import FailureModeBrancher, BranchingConfig
-            brancher = FailureModeBrancher(
-                lm=refl_lm,
-                reflection=reflection_loop,
-                config=BranchingConfig(enabled=True, branch_every=500, min_reflections=20),
-            )
-            _info("branching: enabled (every 500 episodes, min 20 reflections)")
-
-    # --- Trainer config ---
-    if use_prod:
-        prod_overrides = dict(
-            n_warmup_episodes=args.warmup,
-            n_train_episodes=args.train_ep,
-            n_finetune_episodes=args.finetune,
-            checkpoint_dir=args.checkpoint_dir,
-            show_progress=show_progress,
-            n_workers=args.workers,
-        )
-        # Scale alpha down when running fewer episodes than production default
-        # (production alpha=0.8 tuned for 5000 episodes)
-        if args.train_ep < 5000:
-            ratio = args.train_ep / 5000
-            prod_overrides["alpha_train"] = max(0.2, 0.8 * ratio)
-            prod_overrides["alpha_finetune"] = 0.05
-        trainer_cfg = TrainerConfig.production(**prod_overrides)
-    else:
-        trainer_cfg = TrainerConfig(
-            n_warmup_episodes=args.warmup,
-            n_train_episodes=args.train_ep,
-            n_finetune_episodes=args.finetune,
-            checkpoint_dir=args.checkpoint_dir,
-            show_progress=show_progress,
-            n_workers=args.workers,
-        )
-
-    trainer = PPGTrainer(
-        executor=executor,
-        policy=policy,
-        reward_computer=reward,
-        credit_assigner=credit,
-        config=trainer_cfg,
-        reflection_loop=reflection_loop,
-        evolver=evolver,
-        brancher=brancher,
-        logger=ppg_logger,
-    )
-
-    # ------------------------------------------------------------------
-    # 4. Train PPG
-    # ------------------------------------------------------------------
-    _step_rule(4, 6, f"Training PPG ({args.warmup}+{args.train_ep}+{args.finetune} episodes)...")
-    lm.reset()
-    t0 = time.time()
-    stats = trainer.train(train_examples)
-    train_time = time.time() - t0
-    train_api_calls = lm.reset()
-    _info(f"done in {train_time:.0f}s  "
-          f"mean_reward={stats.mean_reward('train'):.4f}  "
-          f"task_acc={stats.task_accuracy('train'):.4f}  "
-          f"api_calls={train_api_calls}")
-
-    # ------------------------------------------------------------------
-    # 4b. Calibrate the deployable PPG path on validation data only.
-    # ------------------------------------------------------------------
-    ppg_path = None
-    ppg_calibration_calls = 0
-    ppg_calibration_info = None
-    if args.ppg_calibration == "val_path" and val_ex:
-        _step_rule(5, 6, "Calibrating PPG deployment path on validation split...")
-        from ppg.eval.path_search import select_path_by_validation
-
-        if args.ppg_path_candidates > 0:
-            max_candidates = args.ppg_path_candidates
-        elif use_prod:
-            max_candidates = 20
-        else:
-            max_candidates = None
-        lm.reset()
-        t_cal = time.time()
-        selected = select_path_by_validation(
-            graph=graph,
-            examples=val_ex,
-            lm=lm,
-            metric=metric,
-            constraint_checker=constraint_checker,
-            max_candidates=max_candidates,
-            n_workers=args.workers,
-            show_progress=show_progress,
-        )
-        ppg_calibration_calls = lm.reset()
-        ppg_path = selected.path
-        ppg_calibration_info = {
-            "val_score":       round(selected.val_score, 4),
-            "mean_tokens":     round(selected.mean_tokens, 1),
-            "utility":         round(selected.utility, 4),
-            "n_paths_scored":  selected.n_paths_scored,
-            "total_paths":     selected.total_paths,
-            "api_calls":       ppg_calibration_calls,
-            "time_s":          round(time.time() - t_cal, 1),
-        }
-        _info(
-            f"selected path val={selected.val_score:.4f}  "
-            f"avg_tok={selected.mean_tokens:.1f}  "
-            f"paths={selected.n_paths_scored}/{selected.total_paths}  "
-            f"api_calls={ppg_calibration_calls}"
-        )
-    elif args.ppg_calibration == "dynamic":
-        _step_rule(5, 6, "Using dynamic bandit routing (no fixed path calibration)...")
-        ppg_path = None
-        ppg_calibration_info = {"mode": "dynamic", "api_calls": 0}
-        _info("PPG will use greedy bandit routing per input at eval time")
-    elif args.ppg_calibration == "val_path":
-        _info("skipping PPG path calibration because validation split is empty")
-
-    # ------------------------------------------------------------------
-    # 5+. Evaluate one method at a time — each method fully done before next.
-    #
-    # Order: PPG → MIPROv2 (compile+eval) → GEPA (compile+eval)
-    #        → flat_all → static_best → random_gating → highest_utility
-    #        → MIPROv2 (compile+eval) → GEPA (compile+eval)
-    # ------------------------------------------------------------------
-    from ppg.eval.harness import EvalConfig, EvalHarness, EvalReport
-
-    internal_baselines = ["flat_all", "static_best", "random_gating", "highest_utility"]
-    n_methods = 1 + int(args.run_mipro) + int(args.run_gepa) + len(internal_baselines)
-    eval_step = 0
-
-    def _eval_step(label: str) -> None:
-        nonlocal eval_step
-        eval_step += 1
-        _step_rule(eval_step, n_methods, label)
-
-    harness = EvalHarness(
-        executor=executor,
-        metric=metric,
-        lm=lm,
-        config=EvalConfig(
-            baselines=internal_baselines,
-            ppg_path=ppg_path,
-            show_progress=show_progress,
-            n_workers=args.workers,
-        ),
-        constraint_checker=constraint_checker,
-        logger=ppg_logger,
-    )
-
     all_metrics:       dict[str, "BaselineMetrics"] = {}
     optimized_prompts: dict[str, str]               = {}
     _splits = {"train": train_ex, "val": val_ex, "test": test_ex}
+    train_time = 0.0
+    stats = None
 
-    # -- PPG --
-    _eval_step("Evaluating PPG...")
-    all_metrics["ppg"] = harness.evaluate_splits(
-        "ppg",
-        _splits,
-        lm_counter=lm,
-        opt_calls=train_api_calls + ppg_calibration_calls,
-    )["test"]
-    optimized_prompts["ppg"] = (
-        build_path_prompt(graph, ppg_path)
-        if ppg_path is not None
-        else "[dynamic: learned LinUCB routing per input]"
-    )
+    # ==================================================================
+    # PPG path: train → calibrate → eval + internal baselines
+    # ==================================================================
+    if run_ppg:
+        from ppg.bandits.linucb import LinUCBPolicy
+        from ppg.core import ExecutorConfig, FeatureExtractor, PPGExecutor
+        from ppg.training.credit import CreditAssigner, CreditAssignerConfig
+        from ppg.training.reward import RewardComputer, RewardConfig
+        from ppg.training.trainer import PPGTrainer, TrainerConfig
 
-    # -- Internal baselines: one at a time (no optimization phase) --
-    for name in internal_baselines:
-        _eval_step(f"Evaluating {name}...")
-        all_metrics[name] = harness.evaluate_splits(
-            name, _splits, lm_counter=lm, opt_calls=0
+        _step_rule(2, 4, "Building PPG components...")
+        policy    = LinUCBPolicy(graph)
+
+        feat_extractor = FeatureExtractor.production() if use_prod else FeatureExtractor()
+        exec_config    = ExecutorConfig.production() if use_prod else ExecutorConfig(escalation_enabled=False)
+        executor  = PPGExecutor(
+            graph=graph,
+            selector=policy,
+            lm=lm,
+            feature_extractor=feat_extractor,
+            config=exec_config,
+        )
+
+        # --- Reward (Pareto or scalarized) ---
+        reward_cfg_base = dict(
+            constraint_as_task=constraint_as_task,
+            skip_variance=constraint_as_task,
+        )
+        if use_prod and not args.no_pareto:
+            from ppg.training.reward import ParetoRewardComputer
+            prod_cfg = RewardConfig.production(**reward_cfg_base)
+            reward = ParetoRewardComputer(
+                task_metric=metric,
+                lm=lm,
+                assembler=assembler,
+                constraint_checker=constraint_checker,
+                config=prod_cfg,
+                logger=ppg_logger,
+            )
+            _info("reward: ParetoRewardComputer")
+        else:
+            rcfg = RewardConfig.production(**reward_cfg_base) if use_prod else RewardConfig(**reward_cfg_base)
+            reward = RewardComputer(
+                task_metric=metric,
+                lm=lm,
+                assembler=assembler,
+                constraint_checker=constraint_checker,
+                config=rcfg,
+            )
+
+        credit_cfg = CreditAssignerConfig()
+        if use_prod:
+            credit_cfg.skip_source = False
+            credit_cfg.skip_terminal = False
+            credit_cfg.p_ablate = 0.25
+        credit = CreditAssigner(
+            lm=lm,
+            assembler=assembler,
+            task_metric=metric,
+            config=credit_cfg,
+            constraint_checker=constraint_checker,
+            constraint_as_task=constraint_as_task,
+        )
+
+        # --- Reflection / Evolution / Branching (production mode) ---
+        reflection_loop = None
+        evolver = None
+        brancher = None
+
+        if use_prod:
+            refl_lm = lm
+            if args.ppg_reflection_model:
+                from ppg.lm.clients import CountingLMClient
+                refl_lm = CountingLMClient(make_lm(args.provider, args.ppg_reflection_model, cache_dir))
+
+            if not args.no_reflection:
+                from ppg.training.reflection import ReflectionLoop, ReflectionConfig
+                reflection_loop = ReflectionLoop(
+                    lm=refl_lm,
+                    config=ReflectionConfig(
+                        enabled=True,
+                        score_threshold=0.75,
+                        reflect_fraction=0.5,
+                    ),
+                    constraint_checker=constraint_checker,
+                )
+                _info("reflection: enabled (threshold=0.75, fraction=0.5)")
+
+            if not args.no_evolution:
+                from ppg.training.evolution import FragmentEvolver, EvolutionConfig
+                evolver = FragmentEvolver(
+                    lm=refl_lm,
+                    config=EvolutionConfig(enabled=True, evolve_every=500),
+                    reflection=reflection_loop,
+                    benchmark=bench,
+                )
+                _info("evolution: enabled (every 500 episodes)")
+
+            if not args.no_branching and reflection_loop is not None:
+                from ppg.training.branching import FailureModeBrancher, BranchingConfig
+                brancher = FailureModeBrancher(
+                    lm=refl_lm,
+                    reflection=reflection_loop,
+                    config=BranchingConfig(enabled=True, branch_every=500, min_reflections=20),
+                )
+                _info("branching: enabled (every 500 episodes, min 20 reflections)")
+
+        # --- Trainer config ---
+        if use_prod:
+            prod_overrides = dict(
+                n_warmup_episodes=args.warmup,
+                n_train_episodes=args.train_ep,
+                n_finetune_episodes=args.finetune,
+                checkpoint_dir=args.checkpoint_dir,
+                show_progress=show_progress,
+                n_workers=args.workers,
+            )
+            if args.train_ep < 5000:
+                ratio = args.train_ep / 5000
+                prod_overrides["alpha_train"] = max(0.2, 0.8 * ratio)
+                prod_overrides["alpha_finetune"] = 0.05
+            trainer_cfg = TrainerConfig.production(**prod_overrides)
+        else:
+            trainer_cfg = TrainerConfig(
+                n_warmup_episodes=args.warmup,
+                n_train_episodes=args.train_ep,
+                n_finetune_episodes=args.finetune,
+                checkpoint_dir=args.checkpoint_dir,
+                show_progress=show_progress,
+                n_workers=args.workers,
+            )
+
+        trainer = PPGTrainer(
+            executor=executor,
+            policy=policy,
+            reward_computer=reward,
+            credit_assigner=credit,
+            config=trainer_cfg,
+            reflection_loop=reflection_loop,
+            evolver=evolver,
+            brancher=brancher,
+            logger=ppg_logger,
+        )
+
+        # --- Train ---
+        _step_rule(3, 4, f"Training PPG ({args.warmup}+{args.train_ep}+{args.finetune} episodes)...")
+        lm.reset()
+        t0 = time.time()
+        stats = trainer.train(train_examples)
+        train_time = time.time() - t0
+        train_api_calls = lm.reset()
+        _info(f"done in {train_time:.0f}s  "
+              f"mean_reward={stats.mean_reward('train'):.4f}  "
+              f"task_acc={stats.task_accuracy('train'):.4f}  "
+              f"api_calls={train_api_calls}")
+
+        # --- Calibrate ---
+        ppg_path = None
+        ppg_calibration_calls = 0
+        ppg_calibration_info = None
+        if args.ppg_calibration == "val_path" and val_ex:
+            _info("Calibrating PPG deployment path on validation split...")
+            from ppg.eval.path_search import select_path_by_validation
+
+            if args.ppg_path_candidates > 0:
+                max_candidates = args.ppg_path_candidates
+            elif use_prod:
+                max_candidates = 20
+            else:
+                max_candidates = None
+            lm.reset()
+            t_cal = time.time()
+            selected = select_path_by_validation(
+                graph=graph,
+                examples=val_ex,
+                lm=lm,
+                metric=metric,
+                constraint_checker=constraint_checker,
+                max_candidates=max_candidates,
+                n_workers=args.workers,
+                show_progress=show_progress,
+            )
+            ppg_calibration_calls = lm.reset()
+            ppg_path = selected.path
+            ppg_calibration_info = {
+                "val_score":       round(selected.val_score, 4),
+                "mean_tokens":     round(selected.mean_tokens, 1),
+                "utility":         round(selected.utility, 4),
+                "n_paths_scored":  selected.n_paths_scored,
+                "total_paths":     selected.total_paths,
+                "api_calls":       ppg_calibration_calls,
+                "time_s":          round(time.time() - t_cal, 1),
+            }
+            _info(
+                f"selected path val={selected.val_score:.4f}  "
+                f"avg_tok={selected.mean_tokens:.1f}  "
+                f"paths={selected.n_paths_scored}/{selected.total_paths}  "
+                f"api_calls={ppg_calibration_calls}"
+            )
+        elif args.ppg_calibration == "dynamic":
+            ppg_path = None
+            ppg_calibration_info = {"mode": "dynamic", "api_calls": 0}
+            _info("PPG will use greedy bandit routing per input at eval time")
+
+        # --- Evaluate PPG + internal baselines ---
+        from ppg.eval.harness import EvalConfig, EvalHarness, EvalReport
+
+        internal_baselines = ["flat_all", "static_best", "random_gating", "highest_utility"]
+        harness = EvalHarness(
+            executor=executor,
+            metric=metric,
+            lm=lm,
+            config=EvalConfig(
+                baselines=internal_baselines,
+                ppg_path=ppg_path,
+                show_progress=show_progress,
+                n_workers=args.workers,
+            ),
+            constraint_checker=constraint_checker,
+            logger=ppg_logger,
+        )
+
+        _step_rule(4, 4, "Evaluating PPG + internal baselines...")
+        all_metrics["ppg"] = harness.evaluate_splits(
+            "ppg", _splits, lm_counter=lm,
+            opt_calls=train_api_calls + ppg_calibration_calls,
         )["test"]
+        optimized_prompts["ppg"] = (
+            build_path_prompt(graph, ppg_path)
+            if ppg_path is not None
+            else "[dynamic: learned LinUCB routing per input]"
+        )
 
-    # -- MIPROv2: compile then eval --
+        for name in internal_baselines:
+            _info(f"  evaluating {name}...")
+            all_metrics[name] = harness.evaluate_splits(
+                name, _splits, lm_counter=lm, opt_calls=0
+            )["test"]
+
+        optimized_prompts["flat_all"]        = build_seed_prompt(graph)
+        optimized_prompts["static_best"]     = build_best_path_prompt(graph)
+        optimized_prompts["random_gating"]   = "[dynamic: random node selection per input]"
+        optimized_prompts["highest_utility"] = build_best_path_prompt(graph)
+
+    # ==================================================================
+    # MIPROv2 path: compile → eval (independent)
+    # ==================================================================
     if args.run_mipro:
-        _eval_step("Compiling + evaluating MIPROv2 (auto='heavy')...")
+        _header(f"MIPROv2 (heavy) — {bench}  |  {args.model}")
+        _step_rule(1, 2, "Compiling MIPROv2 (auto='heavy')...")
         try:
             import dspy
             dspy_model_str = f"openai/{args.model}" if args.provider == "openai" \
@@ -815,23 +800,38 @@ def main():
             mipro = MIPROv2Baseline(metric=metric, auto="heavy",
                                     constraint_checker=constraint_checker)
             mipro_counter.reset()
+            t0_mipro = time.time()
             mipro.compile(trainset=train_ex, valset=val_ex, seed_instructions=seed_prompt)
             mipro_opt_calls = mipro_counter.reset()
-            harness.register_external("miprov2", mipro)
-            all_metrics["miprov2"] = harness.evaluate_splits(
+            mipro_compile_time = time.time() - t0_mipro
+            _info(f"compiled in {mipro_compile_time:.0f}s  opt_calls={mipro_opt_calls}")
+
+            _step_rule(2, 2, "Evaluating MIPROv2...")
+            from ppg.eval.harness import EvalConfig, EvalHarness
+            mipro_harness = EvalHarness(
+                executor=None,
+                metric=metric,
+                lm=lm,
+                config=EvalConfig(baselines=[], show_progress=show_progress, n_workers=args.workers),
+                constraint_checker=constraint_checker,
+            )
+            mipro_harness.register_external("miprov2", mipro)
+            all_metrics["miprov2"] = mipro_harness.evaluate_splits(
                 "miprov2", _splits, lm_counter=mipro_counter, opt_calls=mipro_opt_calls
             )["test"]
             optimized_prompts["miprov2"] = mipro._prompt_prefix or seed_prompt
         except ImportError as e:
             _info(f"SKIP — {e}")
 
-    # -- GEPA: compile then eval --
+    # ==================================================================
+    # GEPA path: compile → eval (independent)
+    # ==================================================================
     if args.run_gepa:
-        _eval_step(f"Compiling + evaluating GEPA (max_metric_calls={args.gepa_calls})...")
+        _header(f"GEPA (heavy) — {bench}  |  {args.model}")
+        _step_rule(1, 2, f"Compiling GEPA (max_metric_calls={args.gepa_calls})...")
         try:
             import dspy as _dspy
             from ppg.eval.external import GEPABaseline
-            # Configure DSPy main LM (needed even if --run-mipro was skipped).
             _gepa_model_str = f"openai/{args.model}" if args.provider == "openai" \
                               else f"anthropic/{args.model}"
             _gepa_dspy_lm = _dspy.LM(_gepa_model_str)
@@ -850,37 +850,45 @@ def main():
                 constraint_checker=constraint_checker,
             )
             gepa_counter.reset()
+            t0_gepa = time.time()
             gepa.compile(
                 trainset=train_ex,
                 valset=val_ex,
                 seed_instructions=seed_prompt,
             )
             gepa_opt_calls = gepa_counter.reset()
-            harness.register_external("gepa", gepa)
-            all_metrics["gepa"] = harness.evaluate_splits(
+            gepa_compile_time = time.time() - t0_gepa
+            _info(f"compiled in {gepa_compile_time:.0f}s  opt_calls={gepa_opt_calls}")
+
+            _step_rule(2, 2, "Evaluating GEPA...")
+            from ppg.eval.harness import EvalConfig, EvalHarness
+            gepa_harness = EvalHarness(
+                executor=None,
+                metric=metric,
+                lm=lm,
+                config=EvalConfig(baselines=[], show_progress=show_progress, n_workers=args.workers),
+                constraint_checker=constraint_checker,
+            )
+            gepa_harness.register_external("gepa", gepa)
+            all_metrics["gepa"] = gepa_harness.evaluate_splits(
                 "gepa", _splits, lm_counter=gepa_counter, opt_calls=gepa_opt_calls
             )["test"]
             optimized_prompts["gepa"] = gepa._prompt_prefix or seed_prompt
         except ImportError as e:
             _info(f"SKIP — {e}")
 
-    # Collect static-path prompts for internal baselines.
-    # flat_all / static_best have fixed templates; routing methods vary per input.
-    optimized_prompts["flat_all"]        = build_seed_prompt(graph)
-    optimized_prompts["static_best"]     = build_best_path_prompt(graph)
-    optimized_prompts["random_gating"]   = "[dynamic: random node selection per input]"
-    optimized_prompts["highest_utility"] = build_best_path_prompt(graph)
-
-    # Assemble final report from accumulated per-method results
-    ppg_m = all_metrics.pop("ppg")
-    report = EvalReport(ppg=ppg_m, baselines=all_metrics)
-
     # ------------------------------------------------------------------
     # Print results
     # ------------------------------------------------------------------
-    rows        = report.comparison_table()
-    winner      = report.winner()
-    ppg_vs_flat = report.ppg_delta("flat_all")
+    if not all_metrics:
+        print("\nNo methods ran. Check flags.")
+        return
+
+    rows = []
+    for name, m in all_metrics.items():
+        rows.append(m.as_dict())
+    rows.sort(key=lambda d: d["task_accuracy"], reverse=True)
+    winner = rows[0]["name"]
 
     try:
         from rich.console import Console
@@ -904,9 +912,7 @@ def main():
 
         for row in rows:
             is_winner = row["name"] == winner
-            is_ppg    = row["name"] == "ppg"
             name_str  = (f"[bold green]{row['name']}[/bold green]" if is_winner
-                         else f"[cyan]{row['name']}[/cyan]" if is_ppg
                          else row["name"])
             acc_str   = (f"[bold green]{row['task_accuracy']:.4f}[/bold green]"
                          if is_winner else f"{row['task_accuracy']:.4f}")
@@ -921,10 +927,9 @@ def main():
 
         rc = Console()
         rc.print(rtable)
-        rc.print(f"  Winner: [bold green]{winner}[/bold green]  "
-                 f"|  PPG vs flat_all: [{'green' if ppg_vs_flat >= 0 else 'red'}]"
-                 f"{ppg_vs_flat:+.4f}[/{'green' if ppg_vs_flat >= 0 else 'red'}]  "
-                 f"|  Training: {train_time:.0f}s")
+        rc.print(f"  Winner: [bold green]{winner}[/bold green]")
+        if train_time > 0:
+            rc.print(f"  Training: {train_time:.0f}s")
     except ImportError:
         print(f"\n{'System':<18} {'TaskAcc':>8} {'StdTask':>8} {'AvgTok':>8} "
               f"{'Constraint':>11} {'LMCalls':>8}")
@@ -933,31 +938,31 @@ def main():
             print(f"{row['name']:<18} {row['task_accuracy']:>8.4f} {row['std_task']:>8.4f} "
                   f"{row['mean_tokens']:>8.1f} {row['mean_constraint']:>11.4f} "
                   f"{row['lm_calls']:>8}")
-        print(f"\nWinner: {winner}  |  PPG vs flat_all: {ppg_vs_flat:+.4f}")
-        print(f"Training time: {train_time:.0f}s")
+        print(f"\nWinner: {winner}")
 
     # ------------------------------------------------------------------
     # Print optimized prompts
     # ------------------------------------------------------------------
-    try:
-        from rich.console import Console as _RC
-        from rich.panel import Panel as _RP
-        from rich.rule import Rule as _RR
-        from rich.text import Text as _RT
-        _pc = _RC()
-        _pc.print()
-        _pc.print(_RR("[bold]Optimized Prompts[/bold]"))
-        for _mname, _prompt in optimized_prompts.items():
-            _pc.print(_RP(
-                _RT(_prompt),
-                title=f"[bold cyan]{_mname}[/bold cyan]",
-                expand=False,
-            ))
-    except ImportError:
-        print("\n=== Optimized Prompts ===")
-        for _mname, _prompt in optimized_prompts.items():
-            print(f"\n--- {_mname} ---")
-            print(_prompt)
+    if optimized_prompts:
+        try:
+            from rich.console import Console as _RC
+            from rich.panel import Panel as _RP
+            from rich.rule import Rule as _RR
+            from rich.text import Text as _RT
+            _pc = _RC()
+            _pc.print()
+            _pc.print(_RR("[bold]Optimized Prompts[/bold]"))
+            for _mname, _prompt in optimized_prompts.items():
+                _pc.print(_RP(
+                    _RT(_prompt),
+                    title=f"[bold cyan]{_mname}[/bold cyan]",
+                    expand=False,
+                ))
+        except ImportError:
+            print("\n=== Optimized Prompts ===")
+            for _mname, _prompt in optimized_prompts.items():
+                print(f"\n--- {_mname} ---")
+                print(_prompt)
 
     # ------------------------------------------------------------------
     # Save results
@@ -969,8 +974,18 @@ def main():
         tag = f"bbh_{args.bbh_task}"
     elif bench == "mmlu" and args.mmlu_subject != "all":
         tag = f"mmlu_{args.mmlu_subject}"
+    # Include method name in filename when running single external method
+    method_suffix = ""
+    if not run_ppg:
+        methods_run = []
+        if args.run_mipro and "miprov2" in all_metrics:
+            methods_run.append("miprov2")
+        if args.run_gepa and "gepa" in all_metrics:
+            methods_run.append("gepa")
+        if methods_run:
+            method_suffix = "_" + "_".join(methods_run)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    out_path = out_dir / f"{tag}_{args.model.replace('/', '_')}_{timestamp}.json"
+    out_path = out_dir / f"{tag}_{args.model.replace('/', '_')}{method_suffix}_{timestamp}.json"
 
     payload = {
         "benchmark":      bench,
@@ -979,16 +994,16 @@ def main():
         "model":          args.model,
         "provider":       args.provider,
         "reflection_model": args.reflection_model if args.run_gepa else None,
+        "methods_run":    list(all_metrics.keys()),
         "n_train":        len(train_examples),
         "n_val":          len(val_ex),
         "n_test":         len(test_ex),
         "seed":           args.seed,
-        "train_time_s":   round(train_time, 1),
-        "training_stats": stats.summary(),
-        "ppg_calibration": ppg_calibration_info,
+        "train_time_s":   round(train_time, 1) if run_ppg else None,
+        "training_stats": stats.summary() if stats else None,
+        "ppg_calibration": ppg_calibration_info if run_ppg else None,
         "results":        rows,
         "winner":         winner,
-        "ppg_vs_flat_all":   round(ppg_vs_flat, 4),
         "optimized_prompts": optimized_prompts,
     }
     with open(out_path, "w", encoding="utf-8") as f:
@@ -998,7 +1013,7 @@ def main():
     # ------------------------------------------------------------------
     # Diagnostic report (production mode)
     # ------------------------------------------------------------------
-    if use_prod and hasattr(ppg_logger, "diagnostic_report"):
+    if run_ppg and use_prod and hasattr(ppg_logger, "diagnostic_report"):
         report_text = ppg_logger.diagnostic_report()
         if report_text:
             print(f"\n{'=' * 60}")
