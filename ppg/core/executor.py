@@ -158,18 +158,42 @@ class PromptAssembler:
     Renders each fragment in path order and joins with separator.
     Skips blank rendered fragments so optional nodes with empty templates
     don't add empty lines.
+
+    When structured=True, each fragment is prefixed with a markdown section
+    header derived from its FragmentType. This helps the LM parse distinct
+    roles (system context, task, reasoning strategy, output format) instead
+    of treating the prompt as an undifferentiated blob.
     """
 
-    def __init__(self, graph: PPGraph, separator: str = "\n\n"):
+    _SECTION_HEADERS: dict[FragmentType, str] = {
+        FragmentType.DOMAIN_PRIMER:          "## Role",
+        FragmentType.TASK_FRAMING:           "## Task",
+        FragmentType.FEW_SHOT:               "## Example",
+        FragmentType.REASONING_STYLE:        "## Approach",
+        FragmentType.COMPRESSION:            "## Brevity",
+        FragmentType.OUTPUT_CONTRACT:        "## Output Requirements",
+        FragmentType.VERIFICATION:           "## Verification",
+        FragmentType.UNCERTAINTY_ESCALATION: "## Uncertainty Check",
+        FragmentType.TOOL_USE:               "## Tool Use",
+    }
+
+    def __init__(self, graph: PPGraph, separator: str = "\n\n",
+                 structured: bool = False):
         self.graph = graph
         self.separator = separator
+        self.structured = structured
 
     def assemble(self, node_ids: list[str], context: dict) -> str:
         parts = []
         for nid in node_ids:
-            rendered = self.graph.nodes[nid].render(context)
+            node = self.graph.nodes[nid]
+            rendered = node.render(context)
             if rendered.strip():
-                parts.append(rendered)
+                if self.structured:
+                    header = self._SECTION_HEADERS.get(node.type, "")
+                    parts.append(f"{header}\n{rendered}" if header else rendered)
+                else:
+                    parts.append(rendered)
         return self.separator.join(parts)
 
 
@@ -184,6 +208,7 @@ class ExecutorConfig:
     escalation_threshold: float = 0.4     # sc_disagreement above this -> escalate
     max_path_length:      int   = 10      # safety cap to prevent runaway paths
     prompt_separator:     str   = "\n\n"
+    structured_prompts:   bool  = False   # add markdown section headers per fragment type
 
     @classmethod
     def production(cls) -> "ExecutorConfig":
@@ -196,6 +221,7 @@ class ExecutorConfig:
             escalation_enabled=True,
             k_samples=3,
             escalation_threshold=0.3,
+            structured_prompts=True,
         )
 
 
@@ -229,7 +255,10 @@ class PPGExecutor:
         self.lm        = lm
         self.fx        = feature_extractor
         self.cfg       = config or ExecutorConfig()
-        self.assembler = PromptAssembler(graph, self.cfg.prompt_separator)
+        self.assembler = PromptAssembler(
+            graph, self.cfg.prompt_separator,
+            structured=self.cfg.structured_prompts,
+        )
 
     # ------------------------------------------------------------------
     # Public

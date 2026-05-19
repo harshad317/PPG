@@ -291,7 +291,7 @@ def build_ablation_components(
         constraint_checker=constraint_checker,
         config=RewardConfig(
             skip_variance=config.skip_variance,
-            constraint_as_task=benchmark in ("ifeval", "ifbench"),
+            constraint_as_task=benchmark == "ifbench",
         ),
     )
 
@@ -300,7 +300,7 @@ def build_ablation_components(
         assembler=assembler,
         task_metric=metric,
         constraint_checker=constraint_checker,
-        constraint_as_task=benchmark in ("ifeval", "ifbench"),
+        constraint_as_task=benchmark == "ifbench",
         config=CreditAssignerConfig(p_ablate=config.p_ablate),
     )
 
