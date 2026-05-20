@@ -162,6 +162,7 @@ class EvalReport:
 # ---------------------------------------------------------------------------
 
 SUPPORTED_BASELINES = frozenset({
+    "base_model",
     "flat_all",
     "static_best",
     "random_gating",
