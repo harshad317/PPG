@@ -259,6 +259,18 @@ class _StaticBestRunner:
         return response, count_tokens(prompt)
 
 
+class _BaseModelRunner:
+    """Raw LM — sends the input directly with no prompt engineering."""
+
+    def __init__(self, lm: LMClient):
+        self._lm = lm
+
+    def run(self, example: EvalExample) -> tuple[str, int]:
+        from ppg.core.tokenizer import count_tokens
+        response = self._lm.complete(example.x)
+        return response, count_tokens(example.x)
+
+
 class _ExecutorRunner:
     """
     Wraps PPGExecutor with a swapped selector.
@@ -601,6 +613,8 @@ class EvalHarness:
     def _run_baseline(
         self, name: str, examples: list[EvalExample]
     ) -> BaselineMetrics:
+        if name == "base_model":
+            return self._run_base_model(examples)
         if name == "flat_all":
             return self._run_flat_all(examples)
         if name == "static_best":
@@ -636,6 +650,20 @@ class EvalHarness:
     # ------------------------------------------------------------------
     # Baseline runners
     # ------------------------------------------------------------------
+
+    def _run_base_model(self, examples: list[EvalExample]) -> BaselineMetrics:
+        runner = _BaseModelRunner(self._lm)
+
+        scores, tokens, cscores = self._run_examples(
+            examples, runner.run, desc="eval base     "
+        )
+        return BaselineMetrics(
+            name="base_model",
+            task_scores=scores,
+            token_counts=tokens,
+            constraint_scores=cscores,
+            lm_calls=len(examples),
+        )
 
     def _run_flat_all(self, examples: list[EvalExample]) -> BaselineMetrics:
         runner = _FlatAllRunner(self._executor.graph, self._lm)

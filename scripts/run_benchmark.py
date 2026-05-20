@@ -397,6 +397,8 @@ def main():
                         dest="ppg_path_candidates",
                         help="Number of utility-ranked paths to validate for PPG; "
                              "0 searches all complete paths (default: 0)")
+    parser.add_argument("--run-base",  action="store_true", dest="run_base",
+                        help="Run base model eval only (raw input, no prompt engineering). Skips PPG unless --include-ppg.")
     parser.add_argument("--run-mipro", action="store_true", dest="run_mipro",
                         help="Run MIPROv2 only (requires dspy-ai). Skips PPG unless --include-ppg.")
     parser.add_argument("--run-gepa",  action="store_true", dest="run_gepa",
@@ -452,7 +454,7 @@ def main():
     # Determine which methods to run.
     # --run-gepa / --run-mipro without --include-ppg → external only, skip PPG.
     # Default (no external flags) → PPG + internal baselines.
-    has_external = args.run_mipro or args.run_gepa
+    has_external = args.run_mipro or args.run_gepa or args.run_base
     run_ppg = args.include_ppg or not has_external
 
     try:
@@ -764,7 +766,7 @@ def main():
         # --- Evaluate PPG + internal baselines ---
         from ppg.eval.harness import EvalConfig, EvalHarness, EvalReport
 
-        internal_baselines = ["flat_all", "static_best", "random_gating", "highest_utility"]
+        internal_baselines = ["base_model", "flat_all", "static_best", "random_gating", "highest_utility"]
         harness = EvalHarness(
             executor=executor,
             metric=metric,
@@ -896,6 +898,29 @@ def main():
             optimized_prompts["gepa"] = gepa._prompt_prefix or seed_prompt
         except ImportError as e:
             _info(f"SKIP — {e}")
+
+    # ==================================================================
+    # Base model: raw input → LM, no prompt engineering
+    # ==================================================================
+    if args.run_base:
+        _header(f"Base model — {bench}  |  {args.model}")
+        _step_rule(1, 1, "Evaluating base model (raw input, no prompt)...")
+        from ppg.eval.harness import EvalConfig, EvalHarness
+        base_harness = EvalHarness(
+            executor=None,
+            metric=metric,
+            lm=lm,
+            config=EvalConfig(
+                baselines=["base_model"],
+                show_progress=show_progress,
+                n_workers=args.workers,
+            ),
+            constraint_checker=constraint_checker,
+        )
+        all_metrics["base_model"] = base_harness.evaluate_splits(
+            "base_model", _splits, lm_counter=lm, opt_calls=0
+        )["test"]
+        optimized_prompts["base_model"] = "[raw input — no prompt engineering]"
 
     # ------------------------------------------------------------------
     # Print results
