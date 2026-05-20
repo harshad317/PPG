@@ -13,7 +13,6 @@ HotpotQA      : hotpotqa/hotpot_qa                 (config: distractor)
 DROP          : ucinlp/drop                        (no config)
 MBPP          : google-research-datasets/mbpp      (config: full)
 TruthfulQA    : truthfulqa/truthful_qa             (config: generation)
-BigBenchHard  : lukaemon/bbh                       (config: task name, 27 tasks)
 ARCChallenge  : allenai/ai2_arc                    (config: ARC-Challenge)
 LiveBenchMath : livebench/math                     (no config)
 MMLU          : cais/mmlu                          (config: subject or "all")
@@ -27,7 +26,6 @@ HotpotQA      : F1Metric                (token-overlap F1, official HotpotQA met
 DROP          : F1Metric
 MBPP          : MBPPPassAtOneMetric      (executes code against test cases in subprocess)
 TruthfulQA    : F1Metric                (official eval also uses MC accuracy)
-BigBenchHard  : ExactMatchMetric
 ARCChallenge  : MultipleChoiceMetric    (extracts letter A/B/C/D from prose)
 LiveBenchMath : NumericExactMatchMetric
 MMLU          : MultipleChoiceMetric    (extracts letter A/B/C/D from prose)
@@ -580,99 +578,6 @@ class TruthfulQALoader:
 # ---------------------------------------------------------------------------
 # BIG-Bench Hard
 # ---------------------------------------------------------------------------
-
-class BigBenchHardLoader:
-    """
-    BIG-Bench Hard: 27 challenging tasks requiring multi-step reasoning.
-
-    Dataset : lukaemon/bbh  (config: task name)
-    x       : input (task-specific prompt)
-    y_star  : target (exact answer string)
-    Metric  : ExactMatchMetric
-
-    Each task is a separate HF config. Use load(task=...) for one task
-    or load_all_tasks() for all 27 tasks at once.
-
-    Available tasks (27):
-        boolean_expressions, causal_judgement, date_understanding,
-        disambiguation_qa, dyck_languages, formal_fallacies,
-        geometric_shapes, hyperbaton, logical_deduction_five_objects,
-        logical_deduction_seven_objects, logical_deduction_three_objects,
-        movie_recommendation, multistep_arithmetic_two, navigate,
-        object_counting, penguins_in_a_table, reasoning_about_colored_objects,
-        ruin_names, salient_translation_error_detection, snarks,
-        sports_understanding, temporal_sequences,
-        tracking_shuffled_objects_five_objects,
-        tracking_shuffled_objects_seven_objects,
-        tracking_shuffled_objects_three_objects,
-        web_of_lies, word_sorting
-
-    Reference: https://github.com/suzgunmirac/BIG-Bench-Hard
-    Paper: Challenging BIG-Bench Tasks and Whether CoT Can Solve Them (Suzgun et al. 2022)
-    """
-
-    DATASET_ID = "lukaemon/bbh"
-
-    TASKS: list[str] = [
-        "boolean_expressions", "causal_judgement", "date_understanding",
-        "disambiguation_qa", "dyck_languages", "formal_fallacies",
-        "geometric_shapes", "hyperbaton", "logical_deduction_five_objects",
-        "logical_deduction_seven_objects", "logical_deduction_three_objects",
-        "movie_recommendation", "multistep_arithmetic_two", "navigate",
-        "object_counting", "penguins_in_a_table", "reasoning_about_colored_objects",
-        "ruin_names", "salient_translation_error_detection", "snarks",
-        "sports_understanding", "temporal_sequences",
-        "tracking_shuffled_objects_five_objects",
-        "tracking_shuffled_objects_seven_objects",
-        "tracking_shuffled_objects_three_objects",
-        "web_of_lies", "word_sorting",
-    ]
-
-    def load(
-        self,
-        task:  str = "boolean_expressions",
-        split: str = "test",
-        n:     Optional[int] = None,
-        seed:  int = 0,
-    ) -> list[EvalExample]:
-        """
-        Parameters
-        ----------
-        task  : one of BigBenchHardLoader.TASKS
-        split : "test" (only split available in lukaemon/bbh)
-        """
-        if task not in self.TASKS:
-            raise ValueError(
-                f"Unknown BBH task: {task!r}. Available: {self.TASKS}"
-            )
-        ds   = _load_dataset(self.DATASET_ID, task, split=split,
-                             trust_remote_code=False)
-        rows = _sample(list(ds), n, seed)
-        return [
-            EvalExample(
-                x=row["input"],
-                y_star=row["target"],
-            )
-            for row in rows
-        ]
-
-    def load_all_tasks(
-        self,
-        split:      str = "test",
-        n_per_task: Optional[int] = None,
-        seed:       int = 0,
-    ) -> dict[str, list[EvalExample]]:
-        """Load all 27 tasks. Returns {task_name: [EvalExample]}."""
-        return {
-            task: self.load(task=task, split=split, n=n_per_task, seed=seed)
-            for task in self.TASKS
-        }
-
-    @staticmethod
-    def recommended_metric():
-        from ppg.training.reward import ExactMatchMetric
-        return ExactMatchMetric()
-
 
 # ---------------------------------------------------------------------------
 # ARC Challenge

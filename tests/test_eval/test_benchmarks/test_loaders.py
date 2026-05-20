@@ -17,7 +17,6 @@ import pytest
 
 from ppg.eval.benchmarks.loaders import (
     ARCChallengeLoader,
-    BigBenchHardLoader,
     DROPLoader,
     GSM8KLoader,
     HotpotQALoader,
@@ -574,21 +573,6 @@ TRUTHFULQA_ROWS = [
     },
 ]
 
-BBH_ROWS = [
-    {
-        "input": "True or False: The sky is blue.",
-        "target": "True",
-    },
-    {
-        "input": "True or False: Grass is red.",
-        "target": "False",
-    },
-    {
-        "input": "True or False: Water is wet.",
-        "target": "True",
-    },
-]
-
 ARC_ROWS = [
     {
         "id": "Mercury_7175875",
@@ -763,62 +747,6 @@ class TestTruthfulQALoader:
     def test_recommended_metric_is_f1(self):
         from ppg.training.reward import F1Metric
         assert isinstance(TruthfulQALoader.recommended_metric(), F1Metric)
-
-
-# ---------------------------------------------------------------------------
-# BigBenchHardLoader
-# ---------------------------------------------------------------------------
-
-class TestBigBenchHardLoader:
-    def test_dataset_id(self):
-        assert BigBenchHardLoader.DATASET_ID == "lukaemon/bbh"
-
-    def test_tasks_list_has_27_entries(self):
-        assert len(BigBenchHardLoader.TASKS) == 27
-
-    def test_known_tasks_present(self):
-        assert "boolean_expressions" in BigBenchHardLoader.TASKS
-        assert "web_of_lies" in BigBenchHardLoader.TASKS
-        assert "word_sorting" in BigBenchHardLoader.TASKS
-
-    def test_returns_eval_examples(self):
-        with mock_load_dataset(BBH_ROWS):
-            examples = BigBenchHardLoader().load(task="boolean_expressions")
-        assert all(isinstance(e, EvalExample) for e in examples)
-
-    def test_x_is_input(self):
-        with mock_load_dataset(BBH_ROWS):
-            examples = BigBenchHardLoader().load(task="boolean_expressions")
-        assert examples[0].x == BBH_ROWS[0]["input"]
-
-    def test_y_star_is_target(self):
-        with mock_load_dataset(BBH_ROWS):
-            examples = BigBenchHardLoader().load(task="boolean_expressions")
-        assert examples[0].y_star == BBH_ROWS[0]["target"]
-
-    def test_count(self):
-        with mock_load_dataset(BBH_ROWS):
-            examples = BigBenchHardLoader().load(task="boolean_expressions")
-        assert len(examples) == len(BBH_ROWS)
-
-    def test_n_limits(self):
-        with mock_load_dataset(BBH_ROWS):
-            examples = BigBenchHardLoader().load(task="boolean_expressions", n=2)
-        assert len(examples) == 2
-
-    def test_unknown_task_raises(self):
-        with pytest.raises(ValueError, match="Unknown BBH task"):
-            BigBenchHardLoader().load(task="not_a_real_task")
-
-    def test_load_all_tasks_returns_dict(self):
-        with mock_load_dataset(BBH_ROWS):
-            result = BigBenchHardLoader().load_all_tasks()
-        assert isinstance(result, dict)
-        assert set(result.keys()) == set(BigBenchHardLoader.TASKS)
-
-    def test_recommended_metric_is_exact_match(self):
-        from ppg.training.reward import ExactMatchMetric
-        assert isinstance(BigBenchHardLoader.recommended_metric(), ExactMatchMetric)
 
 
 # ---------------------------------------------------------------------------

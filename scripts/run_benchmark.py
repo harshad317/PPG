@@ -35,10 +35,6 @@ python scripts/run_benchmark.py gsm8k --model gpt-4.1-mini --run-gepa \\
 python scripts/run_benchmark.py gsm8k --model gpt-4.1-mini --production \\
     --run-mipro --run-gepa --include-ppg --reflection-model gpt-4o
 
-# BigBenchHard (specific task):
-python scripts/run_benchmark.py bigbench_hard --model gpt-4.1-mini \\
-    --bbh-task causal_judgement --run-gepa
-
 Environment variables
 ---------------------
 OPENAI_API_KEY    : required for --provider openai (default)
@@ -66,7 +62,6 @@ _GRAPH_MAP: dict[str, str] = {
     "drop":          "hotpotqa",   # reading-comprehension domain
     "mbpp":          "mbpp",
     "truthfulqa":    "truthfulqa",
-    "bigbench_hard": "bigbench_hard",
     "arc_challenge": "arc_challenge",
     "livebench_math":"livebench_math",
     "mmlu":          "gsm8k",      # MCQ reasoning
@@ -85,7 +80,6 @@ def load_splits(
     n_val:        int,
     n_test:       int,
     seed:         int,
-    bbh_task:     str,
     mmlu_subject: str,
 ):
     """
@@ -96,7 +90,7 @@ def load_splits(
     them directly and caps to n_train / n_val / n_test.
     """
     from ppg.eval.benchmarks.loaders import (
-        ARCChallengeLoader, BigBenchHardLoader, DROPLoader, GSM8KLoader,
+        ARCChallengeLoader, DROPLoader, GSM8KLoader,
         HotpotQALoader, IFBenchLoader, LiveBenchMathLoader,
         MBPPLoader, MMLULoader, TruthfulQALoader,
     )
@@ -187,14 +181,6 @@ def load_splits(
         train, val, test = _split_single(all_ex, n_train, n_val, n_test)
         metric = loader.recommended_metric()
         objective = "Maximize F1 against the best truthful reference answer."
-
-    # -----------------------------------------------------------------------
-    elif benchmark == "bigbench_hard":
-        loader = BigBenchHardLoader()
-        all_ex = loader.load(task=bbh_task, split="test", seed=seed)
-        train, val, test = _split_single(all_ex, n_train, n_val, n_test)
-        metric = loader.recommended_metric()
-        objective = f"Maximize exact-match accuracy on BIG-Bench Hard task: {bbh_task}."
 
     # -----------------------------------------------------------------------
     elif benchmark == "arc_challenge":
@@ -407,9 +393,7 @@ def main():
                         help="Include PPG training + eval when using --run-mipro/--run-gepa")
     parser.add_argument("--gepa-calls", type=int, default=500, dest="gepa_calls",
                         help="GEPA max_metric_calls heavy budget (default: 500)")
-    parser.add_argument("--bbh-task",    default="causal_judgement", dest="bbh_task",
-                        help="BigBenchHard task name (default: causal_judgement)")
-    parser.add_argument("--mmlu-subject",default="all", dest="mmlu_subject",
+parser.add_argument("--mmlu-subject",default="all", dest="mmlu_subject",
                         help="MMLU subject (default: all)")
     parser.add_argument("--cache-dir",   default=".lm_cache", dest="cache_dir",
                         help="Disk cache dir for LM responses (default: .lm_cache)")
@@ -490,7 +474,6 @@ def main():
         n_val=args.val_n,
         n_test=args.test_n,
         seed=args.seed,
-        bbh_task=args.bbh_task,
         mmlu_subject=args.mmlu_subject,
     )
     _info(f"train={len(train_ex)}  val={len(val_ex)}  test={len(test_ex)}")
@@ -1015,9 +998,7 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     tag = bench
-    if bench == "bigbench_hard":
-        tag = f"bbh_{args.bbh_task}"
-    elif bench == "mmlu" and args.mmlu_subject != "all":
+    if bench == "mmlu" and args.mmlu_subject != "all":
         tag = f"mmlu_{args.mmlu_subject}"
     # Include method name in filename when running single external method
     method_suffix = ""
@@ -1034,7 +1015,6 @@ def main():
 
     payload = {
         "benchmark":      bench,
-        "bbh_task":       args.bbh_task if bench == "bigbench_hard" else None,
         "mmlu_subject":   args.mmlu_subject if bench == "mmlu" else None,
         "model":          args.model,
         "provider":       args.provider,

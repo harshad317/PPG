@@ -1,6 +1,5 @@
 from .loaders import (
     ARCChallengeLoader,
-    BigBenchHardLoader,
     DROPLoader,
     GSM8KLoader,
     HotpotQALoader,
@@ -15,7 +14,6 @@ from .loaders import (
 
 __all__ = [
     "ARCChallengeLoader",
-    "BigBenchHardLoader",
     "DROPLoader",
     "GSM8KLoader",
     "HotpotQALoader",

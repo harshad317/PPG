@@ -402,98 +402,6 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
     },
 
     # -----------------------------------------------------------------------
-    # BIG-Bench Hard — challenging multi-step reasoning
-    # -----------------------------------------------------------------------
-    "bigbench_hard": {
-        "task_framing": [
-            # v1: direct reasoning framing
-            (
-                "Solve the following reasoning problem carefully.\n\n"
-                "{input}"
-            ),
-            # v2: explicit multi-step framing
-            (
-                "The following problem requires careful multi-step reasoning. "
-                "Read the problem fully before beginning to solve it.\n\n"
-                "{input}"
-            ),
-        ],
-        "domain_primer": [
-            (
-                "You are solving challenging reasoning tasks that require "
-                "careful logical thinking. These problems often have "
-                "counter-intuitive answers — do not rely on surface-level "
-                "pattern matching. Trace the logic step by step."
-            ),
-        ],
-        "reasoning_style": [
-            # v1: structured step-by-step
-            (
-                "Break the problem into logical steps.\n"
-                "For each step, state what you know and what you can deduce.\n"
-                "Only after completing all steps, state your final answer."
-            ),
-            # v2: enumerate-then-eliminate
-            (
-                "First, identify the possible answers or outcomes.\n"
-                "Then systematically evaluate each one against the given constraints.\n"
-                "Eliminate options that fail any constraint. "
-                "Select the remaining valid answer."
-            ),
-            # v3: minimal CoT
-            "Think through this step by step, being careful with each logical inference.",
-        ],
-        "compression": [
-            "Reason concisely. State conclusions, skip obvious intermediate steps.",
-        ],
-        "output_contract": [
-            # v1: labeled final answer
-            (
-                "After your reasoning, write your final answer on a new line "
-                "in this exact format:\nAnswer: [your answer]\n"
-                "Give only the answer value, no extra explanation after it."
-            ),
-            # v2: answer-only
-            "State your final answer clearly. Write it last, on its own line.",
-        ],
-        "few_shot": [
-            # v1: logical deduction example
-            (
-                "Here is an example of careful step-by-step reasoning:\n\n"
-                "Problem: If all roses are flowers and some flowers fade quickly, "
-                "can we conclude that some roses fade quickly?\n"
-                "Reasoning: All roses are flowers (given). Some flowers fade "
-                "quickly (given). But 'some flowers' may not include any roses. "
-                "We cannot conclude that some roses fade quickly.\n"
-                "Answer: No\n\n"
-                "Now solve the problem above with the same careful reasoning."
-            ),
-            # v2: ordering/sequencing example
-            (
-                "Here is an example of careful step-by-step reasoning:\n\n"
-                "Problem: Alice is taller than Bob. Carol is shorter than Bob. "
-                "Who is the shortest?\n"
-                "Reasoning: Alice > Bob (given). Bob > Carol (given). "
-                "So Alice > Bob > Carol. Carol is shortest.\n"
-                "Answer: Carol\n\n"
-                "Now solve the problem above with the same careful reasoning."
-            ),
-            # v3: causal reasoning example
-            (
-                "Here is an example of careful step-by-step reasoning:\n\n"
-                "Problem: A bat and a ball cost $1.10 total. The bat costs "
-                "$1.00 more than the ball. How much does the ball cost?\n"
-                "Reasoning: Let ball = x. Bat = x + 1.00. "
-                "x + (x + 1.00) = 1.10. 2x = 0.10. x = 0.05.\n"
-                "Answer: $0.05\n\n"
-                "Now solve the problem above with the same careful reasoning."
-            ),
-            # v4: control variant
-            "Solve the reasoning problem step by step.",
-        ],
-    },
-
-    # -----------------------------------------------------------------------
     # ARC-Challenge — science multiple-choice questions
     # -----------------------------------------------------------------------
     "arc_challenge": {
@@ -896,7 +804,7 @@ def build_graph(
 
     Parameters
     ----------
-    benchmark : "gsm8k" | "ifbench" | "truthfulqa" | "bigbench_hard" | "arc_challenge" | "livebench_math" | "hotpotqa" | "mbpp"
+    benchmark : "gsm8k" | "ifbench" | "truthfulqa" | "arc_challenge" | "livebench_math" | "hotpotqa" | "mbpp"
     topology  : "lean"  → linear chain (3 nodes, no optional branches)
                 "rich"  → extended graph with DOMAIN_PRIMER and COMPRESSION
     variant   : which template variant to use (0 = primary)
