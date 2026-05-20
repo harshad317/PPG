@@ -252,6 +252,13 @@ class DiskCachedLMClient:
         self._ensure_loaded()
         return len(self._cache)
 
+    def reset_stats(self) -> tuple[int, int]:
+        """Return (hits, misses) since last reset and zero the counters."""
+        h, m = self._n_hits, self._n_misses
+        self._n_hits = 0
+        self._n_misses = 0
+        return h, m
+
     def clear(self) -> None:
         """Remove all cached entries and delete the cache file."""
         self._cache = {}

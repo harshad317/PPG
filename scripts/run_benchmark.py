@@ -685,17 +685,20 @@ def main():
         # --- Train ---
         _step_rule(3, 4, f"Training PPG ({args.warmup}+{args.train_ep}+{args.finetune} episodes)...")
         lm.reset()
+        _lm_inner = lm._lm if hasattr(lm, '_lm') else lm
+        if hasattr(_lm_inner, 'reset_stats'):
+            _lm_inner.reset_stats()
         t0 = time.time()
         stats = trainer.train(train_examples)
         train_time = time.time() - t0
         train_api_calls = lm.reset()
+        train_real_calls = _lm_inner.n_misses if hasattr(_lm_inner, 'n_misses') else train_api_calls
         _info(f"done in {train_time:.0f}s  "
               f"mean_reward={stats.mean_reward('train'):.4f}  "
               f"task_acc={stats.task_accuracy('train'):.4f}  "
               f"api_calls={train_api_calls}")
 
         # Show cache stats so users can distinguish real API cost from counted calls
-        _lm_inner = lm._lm if hasattr(lm, '_lm') else lm
         if hasattr(_lm_inner, 'n_hits'):
             _info(f"cache: {_lm_inner.n_hits} hits, {_lm_inner.n_misses} misses, "
                   f"hit_rate={_lm_inner.hit_rate:.1%}  "
@@ -704,6 +707,7 @@ def main():
         # --- Calibrate ---
         ppg_path = None
         ppg_calibration_calls = 0
+        ppg_calibration_real_calls = 0
         ppg_calibration_info = None
         if args.ppg_calibration == "val_path" and val_ex:
             _info("Calibrating PPG deployment path on validation split...")
@@ -716,6 +720,8 @@ def main():
             else:
                 max_candidates = None
             lm.reset()
+            if hasattr(_lm_inner, 'reset_stats'):
+                _lm_inner.reset_stats()
             t_cal = time.time()
             selected = select_path_by_validation(
                 graph=graph,
@@ -728,6 +734,10 @@ def main():
                 show_progress=show_progress,
             )
             ppg_calibration_calls = lm.reset()
+            ppg_calibration_real_calls = (
+                _lm_inner.n_misses if hasattr(_lm_inner, 'n_misses')
+                else ppg_calibration_calls
+            )
             ppg_path = selected.path
             ppg_calibration_info = {
                 "val_score":       round(selected.val_score, 4),
@@ -736,13 +746,15 @@ def main():
                 "n_paths_scored":  selected.n_paths_scored,
                 "total_paths":     selected.total_paths,
                 "api_calls":       ppg_calibration_calls,
+                "real_api_calls":  ppg_calibration_real_calls,
                 "time_s":          round(time.time() - t_cal, 1),
             }
             _info(
                 f"selected path val={selected.val_score:.4f}  "
                 f"avg_tok={selected.mean_tokens:.1f}  "
                 f"paths={selected.n_paths_scored}/{selected.total_paths}  "
-                f"api_calls={ppg_calibration_calls}"
+                f"api_calls={ppg_calibration_calls}  "
+                f"real_calls={ppg_calibration_real_calls}"
             )
         elif args.ppg_calibration == "dynamic":
             ppg_path = None
@@ -768,9 +780,10 @@ def main():
         )
 
         _step_rule(4, 4, "Evaluating PPG + internal baselines...")
+        real_opt_calls = train_real_calls + ppg_calibration_real_calls
         all_metrics["ppg"] = harness.evaluate_splits(
             "ppg", _splits, lm_counter=lm,
-            opt_calls=train_api_calls + ppg_calibration_calls,
+            opt_calls=real_opt_calls,
         )["test"]
         optimized_prompts["ppg"] = (
             build_path_prompt(graph, ppg_path)
