@@ -1,185 +1,169 @@
 # Prompt Policy Graphs
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![Tests](https://img.shields.io/badge/tests-714%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-731%20passing-brightgreen)
 ![Status](https://img.shields.io/badge/status-research%20prototype-orange)
 ![License](https://img.shields.io/badge/license-TBD-lightgrey)
 
-![Colorful Prompt Policy Graphs overview](docs/assets/ppg-hero.svg)
+![Prompt Policy Graphs overview](docs/assets/ppg-hero.svg)
 
-Prompt Policy Graphs, or PPG, is a research prototype for learning adaptive prompt
-programs instead of optimizing one flat prompt string. A PPG represents a prompt as a
-typed directed acyclic graph of reusable fragments, executes it with guard-gated runtime
-routing, and trains the route policy with an edge-factored contextual bandit under a
-multi-objective reward.
+Prompt Policy Graphs, or PPG, is a research prototype for learning adaptive
+prompt programs instead of tuning one flat prompt string. A PPG represents a
+prompt as a typed directed acyclic graph of reusable fragments, routes each
+input through that graph with runtime features and guarded edges, then trains
+the route policy with edge-factored contextual bandits and multi-objective
+reward signals.
 
-The method combines three ideas:
+The repository includes:
 
-| Component | Role in PPG | Repository module |
+| Layer | What is implemented | Main modules |
 | --- | --- | --- |
-| Typed prompt graph | Structures prompts as typed fragments and valid graph paths | `ppg/core/graph.py`, `ppg/data/fragments.py` |
-| FSM-style runtime | Executes prompt fragments conditionally using guards over runtime features | `ppg/core/executor.py`, `ppg/core/features.py` |
-| Bandit training | Learns edge preferences from reward, token cost, variance, and constraints | `ppg/bandits/linucb.py`, `ppg/training/` |
+| Typed prompt graphs | Fragment types, graph validation, JSON serialization, lean/rich graph builders | `ppg/core/graph.py`, `ppg/data/fragments.py` |
+| Runtime execution | Feature extraction, guard evaluation, LinUCB routing, prompt assembly, optional self-consistency escalation | `ppg/core/features.py`, `ppg/core/executor.py` |
+| Training | Warm-up/train/fine-tune loop, LOO fragment credit, reward shaping, GRPO-style updates, Pareto reward, reflection, evolution, branching | `ppg/training/` |
+| Evaluation | Matched-budget harness, validation path search, internal baselines, external MIPROv2/GEPA wrappers | `ppg/eval/` |
+| Benchmarks | Hugging Face loaders for math, QA, instruction following, code, MCQ, and multitask exams | `ppg/eval/benchmarks/loaders.py` |
 
-PPG is designed for experiments on benchmarks such as GSM8K, TruthfulQA, BIG-Bench Hard,
-ARC-Challenge, LiveBench Math, HotpotQA, DROP, MBPP, and MMLU. Seven benchmarks have
-dedicated prompt fragment graphs with curated few-shot examples; two more (DROP, MMLU)
-use domain-matched fallback graphs. The codebase provides the core framework, seed
-prompt graphs, dataset loaders, reward functions, ablation runners, and baseline hooks
-needed to turn the method into a full paper-grade evaluation.
-
-> Research note: this repository is an implementation of the proposed method. It should
-> not be read as a SOTA claim until large-scale benchmark results, statistical testing,
-> and official benchmark scorers are run and reported.
+Research note: this repository implements the proposed method and experiment
+scaffolding. It is not a SOTA claim until large-scale benchmark results,
+official scorers, confidence intervals, and matched optimization budgets are
+reported.
 
 ## Table Of Contents
 
 - [Why PPG](#why-ppg)
-- [Method Overview](#method-overview)
+- [Method](#method)
 - [Architecture](#architecture)
 - [Installation](#installation)
 - [Quickstart](#quickstart)
-- [Running Benchmarks](#running-benchmarks)
+- [Benchmark Runner](#benchmark-runner)
 - [Training](#training)
 - [Evaluation](#evaluation)
 - [Ablations](#ablations)
 - [Benchmark Support](#benchmark-support)
 - [External Baselines](#external-baselines)
 - [Project Structure](#project-structure)
-- [Research Roadmap](#research-roadmap)
 - [Development](#development)
+- [Citation](#citation)
 
 ## Why PPG
 
-Most prompt optimization methods search over a single prompt string. That makes every
-change global: a phrase added for difficult math examples also affects easy examples;
-instructions added for robustness increase token cost everywhere; and credit assignment
-is hard because the final prompt is one undifferentiated blob.
+Most prompt optimization methods search over a single prompt string. That makes
+each edit global: adding detailed reasoning can help difficult examples but
+increase token cost on easy examples; adding strict output instructions can
+improve formatting but harm free-form QA; and assigning credit to one useful
+phrase is hard because the prompt is one undifferentiated blob.
 
-PPG breaks that flat-string assumption.
+PPG makes the prompt a policy:
 
-Instead of asking, "What is the best prompt?", PPG asks:
+1. Define typed fragments such as `TASK_FRAMING`, `REASONING_STYLE`,
+   `OUTPUT_CONTRACT`, `FEW_SHOT`, `COMPRESSION`, and `DOMAIN_PRIMER`.
+2. Build a valid graph of possible fragment paths.
+3. Extract runtime features from each input.
+4. Select edges with learned contextual bandit arms.
+5. Reward routes for task score, constraint satisfaction, token cost, and
+   robustness.
+6. Use fragment-level credit assignment to learn which nodes help or hurt.
 
-1. Which typed fragments should exist?
-2. Which path through the graph should a given input take?
-3. Which guards should fire under runtime uncertainty?
-4. Which fragments deserve credit for task accuracy, token efficiency, and robustness?
+The question becomes "which prompt path should this input take?" rather than
+"what one prompt should every input use?"
 
-That turns prompt optimization into a structured policy-learning problem.
+## Method
 
-## Method Overview
+![PPG method stack](docs/assets/ppg-method-stack.svg)
 
-![Colorful PPG method stack](docs/assets/ppg-method-stack.svg)
-
-PPG defines a prompt as a graph:
+At the core of PPG:
 
 ```text
 node  = PromptFragment(type, template, token_count, utility)
 edge  = Guard(weights, bias)
 path  = source-to-terminal fragment sequence
-guard = 1[weights . phi >= bias]
+guard = weights . phi >= bias
 phi   = runtime feature vector
 ```
 
-The graph topology is frozen during training. The learned parts are:
+The default route learner is `LinUCBPolicy`, with one arm per graph edge. During
+execution, guards identify traversable successors and LinUCB chooses among
+candidate edges using the current feature vector.
 
-- edge arm parameters in `LinUCBPolicy`;
-- guard weights synced from learned edge weights;
-- fragment utilities from leave-one-out credit assignment.
-
-The reward is multi-objective:
+The scalar reward path uses:
 
 ```text
-R = r_task + lambda_constraint * r_constraint
+R = r_task
+    + lambda_constraint * r_constraint
     - lambda_cost * normalized_tokens
     - lambda_variance * perturbation_variance
 ```
 
-This lets a trained PPG prefer prompts that are accurate, short, instruction-following,
-and less brittle under input perturbations.
+`ParetoRewardComputer` is also available for production-style runs. It replaces
+linear scalarization with a bounded Pareto archive over task score, constraint
+score, token cost, and robustness objectives.
+
+Core graph construction keeps topology fixed while learning guard weights and
+fragment utilities. Production mode can optionally evolve fragment text and add
+specialized branches from reflection-discovered failure modes.
 
 ## Architecture
 
-The colored SVG below is the high-level runtime picture. The Mermaid diagrams that
-follow keep the architecture editable directly in Markdown.
+![PPG architecture pipeline](docs/assets/ppg-architecture.svg)
 
-![Colorful PPG architecture pipeline](docs/assets/ppg-architecture.svg)
-
-### System Flow
+### Runtime Flow
 
 ```mermaid
 flowchart LR
     X["Input x"] --> F["FeatureExtractor.pre_lm(x)"]
     F --> Phi["Runtime feature vector phi"]
-    Phi --> G["Guard evaluation on outgoing edges"]
-    G --> S["LinUCBPolicy selects active successor"]
+    Phi --> G["Guard evaluation"]
+    G --> S["LinUCBPolicy.select"]
     S --> Path["Typed fragment path"]
     Path --> A["PromptAssembler"]
     A --> Prompt["Assembled prompt"]
-    Prompt --> LM["LMClient.complete(prompt)"]
+    Prompt --> LM["LMClient.complete"]
     LM --> Y["Model response"]
     Y --> R["RewardComputer"]
     R --> U["Policy update + LOO credit"]
-    U --> Guards["sync_guards(graph)"]
+    U --> Guards["policy.sync_guards(graph)"]
 ```
 
-### Rich Prompt Graph Topology
+`PPG-fast` is the default execution mode and makes one LM call per example. The
+production executor can enable self-consistency escalation with `k_samples=3`;
+when post-LM disagreement exceeds the threshold, the executor appends an
+`UNCERTAINTY_ESCALATION` fragment and calls the LM again.
+
+### Graph Topologies
 
 ```mermaid
 flowchart TD
-    DP["DOMAIN_PRIMER"] --> TF["TASK_FRAMING"]
-    TF --> FS["FEW_SHOT (optional)"]
-    TF --> RS["REASONING_STYLE"]
+    DP["DOMAIN_PRIMER"] --> TF["TASK_FRAMING variants"]
+    TF --> FS["FEW_SHOT variants"]
+    TF --> RS["REASONING_STYLE variants"]
     FS --> RS
-    RS --> OC["OUTPUT_CONTRACT"]
+    RS --> OC["OUTPUT_CONTRACT variants"]
     RS --> C["COMPRESSION"]
     C --> OC
 ```
 
-The seed library supports a lean topology and a rich topology:
-
 | Topology | Shape | Intended use |
 | --- | --- | --- |
 | `lean` | `TASK_FRAMING -> REASONING_STYLE -> OUTPUT_CONTRACT` | Fast sanity checks and topology ablations |
-| `rich` | Adds `DOMAIN_PRIMER` and optional post-reasoning `COMPRESSION` | Main PPG experiments |
-| `rich --few-shot` | Additionally inserts `FEW_SHOT` layer between `TASK_FRAMING` and `REASONING_STYLE` | Experiments testing in-context learning |
+| `rich` | Adds `DOMAIN_PRIMER`, variant branches, and optional `COMPRESSION` | Main PPG experiments |
+| `rich` with `include_few_shot=True` | Adds a `FEW_SHOT` layer between task framing and reasoning | In-context learning experiments |
 
-### Runtime FSM
+### Feature Vector
 
-```mermaid
-stateDiagram-v2
-    [*] --> PreLM: receive input
-    PreLM --> Route: compute pre-LM features
-    Route --> Assemble: walk graph with guards + selector
-    Assemble --> CallLM: assemble path into prompt
-    CallLM --> Return: PPG-fast
-    CallLM --> SampleMore: optional escalation mode
-    SampleMore --> CheckUncertainty: compute disagreement / entropy
-    CheckUncertainty --> Escalate: disagreement above threshold
-    CheckUncertainty --> Return: disagreement below threshold
-    Escalate --> CallLM2: append uncertainty fragment
-    CallLM2 --> Return
-    Return --> [*]
-```
+`RuntimeFeatures.as_vector()` exposes a fixed 14-dimensional feature schema:
 
-`PPG-fast` is the default and uses one LM call per example. Optional escalation mode can
-sample multiple responses, compute disagreement, and make one additional call with an
-uncertainty-escalation fragment.
+| Feature family | Fields |
+| --- | --- |
+| Input length | `input_length_norm` |
+| Post-LM uncertainty | `sc_disagreement`, `entropy_approx` |
+| Verifier/tool state | `verifier_score`, `tool_success`, `tool_failure` |
+| Constraint signals | `has_length_constraint`, `has_format_constraint`, `has_keyword_constraint`, `n_constraints_norm` |
+| Input cluster | `embed_cluster_0` through `embed_cluster_3` |
 
-### Training Loop
-
-```mermaid
-flowchart TD
-    A["Phase 1: warm-up"] --> B["Random routing"]
-    B --> C["Offline LinUCB updates"]
-    C --> D["Phase 2: bandit training"]
-    D --> E["LinUCB routing with exploration"]
-    E --> F["Reward + optional LOO credit"]
-    F --> G["Phase 3: fine-tuning"]
-    G --> H["Low-exploration routing"]
-    H --> I["sync_guards(graph)"]
-    I --> J["Matched-budget evaluation"]
-```
+Hash-based clusters are used by default. `FeatureExtractor.production()` lazily
+uses sentence-transformer embeddings and MiniBatchKMeans when dependencies are
+available.
 
 ## Installation
 
@@ -197,21 +181,21 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 ```
 
-Install the package in editable mode:
+Install the package:
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-Optional dependencies:
+Optional extras:
 
 ```bash
 pip install -e ".[progress]"   # tqdm and rich progress displays
-pip install -e ".[baselines]"  # DSPy/MIPROv2 and GEPA wrappers
+pip install -e ".[baselines]"  # DSPy/MIPROv2 and GEPA-related wrappers
 pip install -e ".[local-lm]"   # transformers, vLLM, torch
 ```
 
-For API-backed runs, set one or both keys:
+For API-backed runs:
 
 ```bash
 export OPENAI_API_KEY="..."
@@ -220,8 +204,8 @@ export ANTHROPIC_API_KEY="..."
 
 ## Quickstart
 
-This minimal example builds a GSM8K graph, routes one input through PPG, and prints the
-assembled prompt path.
+This example builds a GSM8K graph, routes one input through PPG, and prints the
+selected fragment types.
 
 ```python
 from ppg.bandits import LinUCBPolicy
@@ -234,7 +218,7 @@ class FixedLM:
         return "#### 42"
 
 
-graph = build_graph("gsm8k", topology="rich")
+graph = build_graph("gsm8k", topology="rich", include_few_shot=True)
 policy = LinUCBPolicy(graph, alpha=0.5)
 
 executor = PPGExecutor(
@@ -255,7 +239,7 @@ print(trace.token_count)
 print([graph.nodes[node_id].type.value for node_id in trace.node_ids])
 ```
 
-Use a real OpenAI client with disk caching:
+Use an OpenAI client with disk caching:
 
 ```python
 from ppg.lm import DiskCachedLMClient, OpenAIClient, OpenAIConfig
@@ -264,67 +248,98 @@ base_lm = OpenAIClient(OpenAIConfig(model="gpt-4o-mini", temperature=0.0))
 lm = DiskCachedLMClient(base_lm, cache_path=".cache/lm_cache.json")
 ```
 
-## Running Benchmarks
+## Benchmark Runner
 
-The benchmark runner (`scripts/run_benchmark.py`) trains PPG from scratch and evaluates
-against all baselines in a single command.
+`scripts/run_benchmark.py` loads splits, trains PPG when requested, optionally
+calibrates a fixed validation path, evaluates internal baselines, and writes a
+JSON result file.
 
 ```bash
-# GSM8K — grade-school math
+# PPG plus internal baselines on GSM8K
 python scripts/run_benchmark.py gsm8k --model gpt-4o-mini
 
-# TruthfulQA — factual accuracy under adversarial framing
-python scripts/run_benchmark.py truthfulqa --model gpt-4o-mini
+# Production PPG with few-shot fragments and parallel workers
+python scripts/run_benchmark.py gsm8k \
+  --model gpt-4o-mini \
+  --production \
+  --few-shot \
+  --workers 4
 
-# ARC-Challenge — science MCQ with few-shot examples
-python scripts/run_benchmark.py arc_challenge --model gpt-4o-mini --few-shot
+# Instruction following with the IFBench constraint checker
+python scripts/run_benchmark.py ifbench --model gpt-4o-mini --production
 
-# BIG-Bench Hard — multi-step reasoning (specific task)
-python scripts/run_benchmark.py bigbench_hard --model gpt-4o-mini --bbh-task causal_judgement
+# BIG-Bench Hard, one task config
+python scripts/run_benchmark.py bigbench_hard \
+  --model gpt-4o-mini \
+  --bbh-task causal_judgement
 
-# LiveBench Math — competition math with dynamic routing
-python scripts/run_benchmark.py livebench_math --model gpt-4o-mini --few-shot --ppg-calibration dynamic
+# MMLU, one subject
+python scripts/run_benchmark.py mmlu \
+  --model gpt-4o-mini \
+  --mmlu-subject high_school_biology
 
-# HotpotQA — multi-hop QA
-python scripts/run_benchmark.py hotpotqa --model gpt-4o-mini
+# External optimizer only
+python scripts/run_benchmark.py gsm8k --model gpt-4o-mini --run-mipro
+python scripts/run_benchmark.py gsm8k --model gpt-4o-mini --run-gepa
 
-# MBPP — Python function synthesis
-python scripts/run_benchmark.py mbpp --model gpt-4o-mini
+# PPG plus external optimizers in one run
+python scripts/run_benchmark.py gsm8k \
+  --model gpt-4o-mini \
+  --production \
+  --run-mipro \
+  --run-gepa \
+  --include-ppg
 ```
 
-Key flags:
+Useful flags:
 
 | Flag | Effect |
 | --- | --- |
-| `--few-shot` | Inserts a `FEW_SHOT` fragment layer between `TASK_FRAMING` and `REASONING_STYLE` |
-| `--ppg-calibration dynamic` | Uses bandit routing at test time instead of a fixed calibrated path |
-| `--ppg-calibration val_path` | Searches for the best fixed path on the validation set (default) |
-| `--production` | Enables all training features: evolution, branching, reflection, Pareto, semantic features |
-| `--run-mipro` | Adds MIPROv2 external baseline |
-| `--run-gepa` | Adds GEPA external baseline |
+| `--few-shot` | Adds `FEW_SHOT` fragment variants to rich graphs |
+| `--ppg-calibration val_path` | Selects the best fixed route on the validation split; default |
+| `--ppg-calibration dynamic` | Uses greedy learned routing per test input |
+| `--ppg-path-candidates N` | Limits validation path search to the top `N` utility-ranked paths |
+| `--production` | Enables production configs: self-consistency escalation, semantic clusters, Pareto reward, GRPO, reflection, evolution, branching |
+| `--no-reflection`, `--no-evolution`, `--no-branching`, `--no-pareto` | Disable individual production features |
+| `--workers N` | Runs episode collection and evaluation LM calls with thread workers |
+| `--run-mipro`, `--run-gepa` | Runs external prompt optimizer baselines |
+| `--include-ppg` | Includes PPG when running external baselines |
+| `--cache-dir DIR`, `--no-cache` | Controls disk caching for LM calls |
+| `--output-dir DIR` | Writes result JSON files to `DIR` |
+
+The runner currently supports these benchmark names: `arc_challenge`,
+`bigbench_hard`, `drop`, `gsm8k`, `hotpotqa`, `ifbench`, `livebench_math`,
+`mbpp`, `mmlu`, and `truthfulqa`.
 
 ## Training
 
-![Colorful PPG training loop](docs/assets/ppg-training-loop.svg)
+![PPG training loop](docs/assets/ppg-training-loop.svg)
 
-PPG training uses `PPGTrainer`, which runs three phases:
+`PPGTrainer` runs three phases:
 
 | Phase | Selector | Purpose |
 | --- | --- | --- |
-| Warm-up | Random routing | Explore graph edges and seed the bandit |
-| Train | LinUCB with exploration | Learn edge rewards under the multi-objective reward |
-| Fine-tune | LinUCB with low exploration | Stabilize the learned route policy |
+| Warm-up | `RandomSelector` | Explore graph edges and seed the bandit |
+| Train | `LinUCBPolicy` with exploration | Learn route preferences under reward feedback |
+| Fine-tune | `LinUCBPolicy` with low exploration | Stabilize the route policy and fragment utilities |
 
-Example:
+Minimal training example:
 
 ```python
 from ppg.bandits import LinUCBPolicy
 from ppg.core import ExecutorConfig, FeatureExtractor, PPGExecutor
 from ppg.core.executor import PromptAssembler
 from ppg.data import build_graph
-from ppg.training.credit import CreditAssigner, CreditAssignerConfig
-from ppg.training.reward import NumericExactMatchMetric, RewardComputer, RewardConfig
-from ppg.training.trainer import PPGTrainer, TrainerConfig, TrainingExample
+from ppg.training import (
+    CreditAssigner,
+    CreditAssignerConfig,
+    NumericExactMatchMetric,
+    PPGTrainer,
+    RewardComputer,
+    RewardConfig,
+    TrainerConfig,
+    TrainingExample,
+)
 
 
 graph = build_graph("gsm8k", topology="rich")
@@ -345,11 +360,7 @@ reward = RewardComputer(
     task_metric=metric,
     lm=lm,
     assembler=assembler,
-    config=RewardConfig(
-        lambda_cost=0.001,
-        lambda_variance=0.1,
-        skip_variance=False,
-    ),
+    config=RewardConfig(lambda_cost=0.001, lambda_variance=0.1),
 )
 
 credit = CreditAssigner(
@@ -382,7 +393,7 @@ stats = trainer.train(trainset)
 print(stats.summary())
 ```
 
-After training, the policy writes learned edge weights into graph guards:
+After training:
 
 ```python
 policy.sync_guards(graph)
@@ -390,14 +401,29 @@ graph.to_json("checkpoints/gsm8k/graph.json")
 policy.save("checkpoints/gsm8k/policy.npz")
 ```
 
+### Production Training Features
+
+Production mode in the runner wires together these optional components:
+
+| Component | Implementation | Purpose |
+| --- | --- | --- |
+| Self-consistency escalation | `ExecutorConfig.production()` | Samples multiple responses and adds an uncertainty fragment when disagreement is high |
+| Semantic clusters | `FeatureExtractor.production()` | Uses sentence-transformer embeddings when available |
+| GRPO-style updates | `TrainerConfig.k_grpo_paths > 1` | Updates paths with group-relative advantages |
+| Pareto reward | `ParetoRewardComputer` | Avoids fixed scalar weights by ranking objective vectors |
+| Reflection | `ReflectionLoop` | Diagnoses failed episodes and annotates fragments |
+| Evolution | `FragmentEvolver` | Mutates low-utility fragment templates |
+| Branching | `FailureModeBrancher` | Adds specialized branches for repeated failure modes |
+| Logging | `PPGLogger` | Writes JSONL events, CSV episodes, optional W&B logs, and diagnostics |
+
 ## Evaluation
 
 `EvalHarness` compares trained PPG against matched-budget baselines. The default
-internal baselines use one LM call per example, matching `PPG-fast`.
+internal baselines all use one LM call per example, matching `PPG-fast`.
 
 ```python
 from ppg.eval import EvalConfig, EvalExample, EvalHarness
-from ppg.training.reward import NumericExactMatchMetric
+from ppg.training import NumericExactMatchMetric
 
 
 testset = [
@@ -429,19 +455,24 @@ Internal baselines:
 
 | Baseline | Meaning |
 | --- | --- |
-| `flat_all` | Concatenate all graph nodes in topological order |
-| `static_best` | Use a fixed path, or greedy highest-utility path when none is supplied |
-| `random_gating` | Route with a random selector |
-| `highest_utility` | Route greedily using learned fragment utilities |
+| `flat_all` | Concatenates all graph nodes in topological order |
+| `static_best` | Uses a fixed path, or greedy highest-utility path when none is supplied |
+| `random_gating` | Routes with a random selector |
+| `highest_utility` | Routes greedily using learned fragment utilities |
+
+Validation path calibration is implemented in `ppg/eval/path_search.py`.
+`select_path_by_validation()` enumerates complete graph paths, ranks them by
+learned utility, scores candidate paths on validation examples, and returns a
+fixed deployment path.
 
 ## Ablations
 
-The ablation runner trains a fresh system for each ablation and evaluates it under the
-same metric and LM.
+The ablation framework trains a fresh system for each ablation and evaluates it
+under the same metric and LM.
 
 ```python
-from ppg.ablations.study import AblationStudy
-from ppg.training.reward import NumericExactMatchMetric
+from ppg.ablations import AblationStudy
+from ppg.training import NumericExactMatchMetric
 
 
 study = AblationStudy(
@@ -466,34 +497,34 @@ print(ablation_report.table())
 
 Supported ablations:
 
-| Ablation | Disabled component |
+| Ablation | Disabled or changed component |
 | --- | --- |
-| `ppg_full` | Nothing; full system |
+| `ppg_full` | Full scalar-reward PPG |
 | `no_credit` | Leave-one-out fragment credit assignment |
 | `no_variance` | Perturbation variance penalty |
 | `no_bandit` | LinUCB routing, replaced by random routing |
-| `lean_topology` | Rich graph, replaced by 3-node lean graph |
+| `lean_topology` | Rich graph replaced by a 3-node lean graph |
 
 ## Benchmark Support
 
-![Colorful PPG benchmark coverage map](docs/assets/ppg-benchmark-map.svg)
+![PPG benchmark coverage map](docs/assets/ppg-benchmark-map.svg)
 
-Benchmark loaders live in `ppg/eval/benchmarks/loaders.py`. They convert Hugging Face
-datasets into `EvalExample` objects and expose recommended metrics. Seven benchmarks have
-dedicated prompt fragment graphs with curated task-specific few-shot examples in
-`ppg/data/fragments.py`. Two benchmarks (DROP, MMLU) use domain-matched fallback graphs.
+Benchmark loaders convert Hugging Face datasets into `EvalExample` objects and
+expose recommended metrics or constraint checkers.
 
-| Benchmark | Loader | Default metric | Dedicated graph | Few-shot |
+| Benchmark | Runner support | Loader | Default scoring | Fragment graph |
 | --- | --- | --- | --- | --- |
-| GSM8K | `GSM8KLoader` | `NumericExactMatchMetric` | Yes | Yes |
-| TruthfulQA | `TruthfulQALoader` | `F1Metric` | Yes | Yes |
-| BIG-Bench Hard | `BigBenchHardLoader` | `ExactMatchMetric` | Yes | Yes |
-| ARC-Challenge | `ARCChallengeLoader` | `MultipleChoiceMetric` | Yes | Yes |
-| LiveBench Math | `LiveBenchMathLoader` | `NumericExactMatchMetric` | Yes | Yes |
-| HotpotQA | `HotpotQALoader` | `F1Metric` | Yes | Yes |
-| MBPP | `MBPPLoader` | `MBPPPassAtOneMetric` | Yes | Yes |
-| DROP | `DROPLoader` | `F1Metric` | Fallback (hotpotqa) | -- |
-| MMLU | `MMLULoader` | `MultipleChoiceMetric` | Fallback (gsm8k) | -- |
+| GSM8K | Yes | `GSM8KLoader` | `NumericExactMatchMetric` | Dedicated |
+| IFBench | Yes | `IFBenchLoader` | `IFBenchConstraintChecker` via constraint scoring | Dedicated |
+| IFEval | Loader only | `IFEvalLoader` | `IFEvalOfficialChecker` when installed, keyword fallback otherwise | None |
+| TruthfulQA | Yes | `TruthfulQALoader` | `F1Metric` | Dedicated |
+| BIG-Bench Hard | Yes | `BigBenchHardLoader` | `ExactMatchMetric` | Dedicated |
+| ARC-Challenge | Yes | `ARCChallengeLoader` | `MultipleChoiceMetric` | Dedicated |
+| LiveBench Math | Yes | `LiveBenchMathLoader` | `NumericExactMatchMetric` | Dedicated |
+| HotpotQA | Yes | `HotpotQALoader` | `F1Metric` | Dedicated |
+| MBPP | Yes | `MBPPLoader` | `MBPPPassAtOneMetric` | Dedicated |
+| DROP | Yes | `DROPLoader` | `F1Metric` | Fallback to HotpotQA graph |
+| MMLU | Yes | `MMLULoader` | `MultipleChoiceMetric` | Fallback to GSM8K graph |
 
 Example loader usage:
 
@@ -507,47 +538,43 @@ test_examples = loader.load(split="test", n=100, seed=1)
 metric = loader.recommended_metric()
 ```
 
-Security note for MBPP: `MBPPPassAtOneMetric` executes generated Python code in a
-subprocess with a wall-clock timeout and (on Unix) 256 MB virtual-memory and CPU-time
-limits via `resource.setrlimit`. Use it only in a trusted or isolated environment;
-the resource limits reduce but do not eliminate execution risk.
+Security note for MBPP: `MBPPPassAtOneMetric` executes generated Python code in
+a subprocess with a wall-clock timeout and, on Unix, 256 MB virtual-memory and
+CPU-time limits via `resource.setrlimit`. Use it only in a trusted or isolated
+environment; the resource limits reduce but do not eliminate execution risk.
 
 ## External Baselines
 
-PPG includes wrappers for stronger external prompt optimizers:
+PPG includes wrappers for external prompt optimizers:
 
-| Baseline | Wrapper | Dependency | Notes |
-| --- | --- | --- | --- |
-| DSPy MIPROv2 | `MIPROv2Baseline` | `dspy-ai` | Bayesian instruction/few-shot prompt optimization |
-| GEPA | `GEPABaseline` | `gepa` | Evolutionary trace/reflection-based prompt adaptation |
+| Baseline | Wrapper | Notes |
+| --- | --- | --- |
+| DSPy MIPROv2 | `MIPROv2Baseline` | Bayesian instruction and few-shot prompt optimization |
+| GEPA | `GEPABaseline` | DSPy GEPA-style evolutionary prompt adaptation with reflection feedback |
 
-Call `MIPROv2Baseline.verify()` or `GEPABaseline.verify()` before `compile()` to confirm the optional package is importable and report its version.
-
-Example integration pattern:
+Call `MIPROv2Baseline.verify()` or `GEPABaseline.verify()` before long runs to
+confirm that optional packages are importable.
 
 ```python
-from ppg.eval.external import GEPABaseline, MIPROv2Baseline
 from ppg.eval import EvalConfig, EvalHarness
+from ppg.eval.external import GEPABaseline, MIPROv2Baseline
 
 
-# Confirm packages are available before starting long compile runs.
-print(MIPROv2Baseline.verify())   # {"available": True, "version": "...", "has_miprov2": True}
-print(GEPABaseline.verify())      # {"available": True, "has_optimize_fn": True}
+print(MIPROv2Baseline.verify())
+print(GEPABaseline.verify())
 
 mipro = MIPROv2Baseline(metric=metric, auto="medium")
-mipro.compile(trainset=train_examples, seed_instructions="Solve the task carefully.")
+mipro.compile(trainset=train_examples, valset=val_examples, seed_instructions="Solve carefully.")
 
 gepa = GEPABaseline(
     metric=metric,
-    lm_client=lm,
     reflection_lm="openai/gpt-4o",
     max_metric_calls=150,
 )
 gepa.compile(
     trainset=train_examples,
-    valset=test_examples[:50],
-    seed_prompt="Solve the task carefully.",
-    objective="Maximize task accuracy while keeping prompts concise.",
+    valset=val_examples,
+    seed_instructions="Solve carefully.",
 )
 
 harness = EvalHarness(
@@ -564,55 +591,43 @@ harness = EvalHarness(
 ```text
 ppg/
   core/
-    graph.py        # PromptFragment, Guard, PPGraph, PPGraphBuilder
-    features.py     # RuntimeFeatures and feature extraction
-    executor.py     # FSM execution, routing, prompt assembly
-    tokenizer.py    # Token counting (tiktoken cl100k_base with word-split fallback)
+    graph.py          # PromptFragment, Guard, PPGraph, PPGraphBuilder
+    features.py       # RuntimeFeatures and feature extraction
+    executor.py       # FSM execution, routing, prompt assembly
+    tokenizer.py      # Token counting with tiktoken fallback
   bandits/
-    linucb.py       # Edge-factored LinUCB policy
+    linucb.py         # Edge-factored LinUCB policy
   training/
-    reward.py       # Multi-objective reward and metrics
-    credit.py       # Leave-one-out fragment credit assignment
-    trainer.py      # Three-phase training loop
+    reward.py         # Metrics, constraint checkers, scalar and Pareto rewards
+    credit.py         # Leave-one-out fragment credit assignment
+    trainer.py        # Three-phase trainer, GRPO updates, parallel collection
+    reflection.py     # Failure diagnosis and fragment annotations
+    evolution.py      # Fragment mutation and crossover
+    branching.py      # Failure-mode branch insertion
+    meta_learning.py  # Cross-benchmark policy initialization experiments
   data/
-    fragments.py    # Seed fragment library, few-shot examples, and graph builders
+    fragments.py      # Seed fragment library and graph builders
   eval/
-    harness.py      # Matched-budget evaluation harness
-    external.py     # MIPROv2 and GEPA baseline wrappers
-    benchmarks/     # Dataset loaders and benchmark metrics
+    harness.py        # Matched-budget evaluation harness
+    path_search.py    # Validation path calibration
+    external.py       # MIPROv2 and GEPA wrappers
+    benchmarks/       # Dataset loaders and benchmark metrics
   ablations/
-    study.py        # Paper-style ablation runner
+    study.py          # Paper-style ablation runner
   lm/
-    clients.py      # OpenAI, Anthropic, and disk-cached LM clients
+    clients.py        # OpenAI, Anthropic, counting, and disk-cached clients
+  logging_utils.py    # JSONL/CSV/W&B logging and diagnostic reports
+scripts/
+  run_benchmark.py    # End-to-end benchmark runner
 tests/
   test_core/
   test_bandits/
   test_training/
   test_eval/
   test_ablations/
+  test_data/
+  test_lm/
 ```
-
-## Research Roadmap
-
-The repository is structured around an ICLR-style empirical story:
-
-1. Show that graph routing improves the accuracy/token Pareto frontier versus flat
-   prompts and prompt selection baselines.
-2. Show that typed structure prevents degenerate prompt paths.
-3. Show that learned guards beat random gating and input-only gating.
-4. Show that perturbation variance reward improves robustness under input perturbations.
-5. Show that per-node credit assignment identifies useful fragments and helps pruning.
-6. Compare against strong optimizers such as MIPROv2 and GEPA under matched budgets.
-
-Suggested paper tables:
-
-| Table | Contents |
-| --- | --- |
-| Main results | PPG vs flat-all, static-best, random-gating, MIPROv2, GEPA, and task baselines |
-| Ablations | `ppg_full`, `no_credit`, `no_variance`, `no_bandit`, `lean_topology` |
-| Pareto analysis | Accuracy vs prompt tokens and LM calls |
-| Transfer | Train on one task family, evaluate routing behavior on another |
-| Interpretability | Edge update counts, guard weights, fragment utility, path heatmaps |
 
 ## Development
 
@@ -625,7 +640,7 @@ python3 -m pytest
 Run Python syntax checks:
 
 ```bash
-python3 -m py_compile $(find ppg -name "*.py" -print)
+python3 -m py_compile $(find ppg scripts -name "*.py" -print)
 ```
 
 Run linting when `ruff` is installed:
@@ -634,12 +649,13 @@ Run linting when `ruff` is installed:
 ruff check .
 ```
 
-The last verified local run:
+Last verified local run:
 
 ```text
-714 passed
+731 passed in 3.54s
 ```
 
 ## Citation
 
-No citation is available yet. If this becomes a paper, add the BibTeX entry here.
+No citation is available yet. If this becomes a paper, add the BibTeX entry
+here.

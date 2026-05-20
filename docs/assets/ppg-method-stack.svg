@@ -1,69 +1,56 @@
 <svg width="1200" height="520" viewBox="0 0 1200 520" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">PPG method stack</title>
-  <desc id="desc">A colorful method stack showing CPG structure, APA execution, and PPL training fused into Prompt Policy Graphs.</desc>
+  <desc id="desc">The PPG method stack combines typed prompt graphs, runtime routing, multi-objective training, and optional production feedback loops.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="520" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#F8FAFC"/>
-      <stop offset="1" stop-color="#E0F2FE"/>
+      <stop offset="0.48" stop-color="#ECFEFF"/>
+      <stop offset="1" stop-color="#FFF7ED"/>
     </linearGradient>
-    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#38BDF8"/>
-      <stop offset="1" stop-color="#2563EB"/>
-    </linearGradient>
-    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#FACC15"/>
-      <stop offset="1" stop-color="#FB923C"/>
-    </linearGradient>
-    <linearGradient id="pink" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#C084FC"/>
-      <stop offset="1" stop-color="#F472B6"/>
-    </linearGradient>
-    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#34D399"/>
-      <stop offset="1" stop-color="#14B8A6"/>
-    </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#0F172A" flood-opacity="0.16"/>
+    <filter id="shadow" x="-18%" y="-18%" width="136%" height="136%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#0F172A" flood-opacity="0.14"/>
     </filter>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+      <path d="M0 0 L10 5 L0 10 Z" fill="#334155"/>
     </marker>
   </defs>
 
   <rect width="1200" height="520" rx="26" fill="url(#bg)"/>
-  <text x="70" y="70" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="38" font-weight="800">PPG fuses structure, execution, and training</text>
-  <text x="72" y="105" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600">Each idea covers one missing axis; the fused method gives a complete adaptive prompt policy.</text>
+  <text x="66" y="70" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="38" font-weight="900">Method stack</text>
+  <text x="68" y="106" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">Structure the prompt, route each input, train the route policy, then calibrate deployment.</text>
 
   <g filter="url(#shadow)">
-    <rect x="80" y="165" width="286" height="206" rx="22" fill="url(#blue)"/>
-    <text x="110" y="214" fill="#F8FAFC" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="800">CPG</text>
-    <text x="110" y="247" fill="#E0F2FE" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">How to structure</text>
-    <text x="110" y="292" fill="#FFFFFF" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">Typed prompt nodes</text>
-    <text x="110" y="322" fill="#DBEAFE" font-family="Inter, Arial, sans-serif" font-size="17">Valid paths, fragment roles,</text>
-    <text x="110" y="348" fill="#DBEAFE" font-family="Inter, Arial, sans-serif" font-size="17">interpretable composition</text>
+    <rect x="70" y="160" width="244" height="190" rx="16" fill="#BAE6FD"/>
+    <text x="102" y="207" fill="#082F49" font-family="Inter, Arial, sans-serif" font-size="25" font-weight="900">1. Typed Graph</text>
+    <text x="102" y="245" fill="#075985" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">PromptFragment nodes</text>
+    <text x="102" y="271" fill="#075985" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">valid DAG paths</text>
+    <text x="102" y="297" fill="#075985" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">lean/rich topologies</text>
 
-    <rect x="457" y="165" width="286" height="206" rx="22" fill="url(#orange)"/>
-    <text x="487" y="214" fill="#431407" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="800">APA</text>
-    <text x="487" y="247" fill="#7C2D12" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">How to execute</text>
-    <text x="487" y="292" fill="#431407" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="800">FSM guards</text>
-    <text x="487" y="322" fill="#7C2D12" font-family="Inter, Arial, sans-serif" font-size="17">Runtime features, branching,</text>
-    <text x="487" y="348" fill="#7C2D12" font-family="Inter, Arial, sans-serif" font-size="17">uncertainty escalation</text>
+    <rect x="348" y="160" width="244" height="190" rx="16" fill="#BBF7D0"/>
+    <text x="380" y="207" fill="#064E3B" font-family="Inter, Arial, sans-serif" font-size="25" font-weight="900">2. Runtime</text>
+    <text x="380" y="245" fill="#166534" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">14 runtime features</text>
+    <text x="380" y="271" fill="#166534" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">guard predicates</text>
+    <text x="380" y="297" fill="#166534" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">self-consistency option</text>
 
-    <rect x="834" y="165" width="286" height="206" rx="22" fill="url(#pink)"/>
-    <text x="864" y="214" fill="#FFFFFF" font-family="Inter, Arial, sans-serif" font-size="30" font-weight="800">PPL</text>
-    <text x="864" y="247" fill="#FCE7F3" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">How to train</text>
-    <text x="864" y="292" fill="#FFFFFF" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="800">Bandit reward</text>
-    <text x="864" y="322" fill="#FCE7F3" font-family="Inter, Arial, sans-serif" font-size="17">Accuracy, token cost,</text>
-    <text x="864" y="348" fill="#FCE7F3" font-family="Inter, Arial, sans-serif" font-size="17">variance, constraints</text>
+    <rect x="626" y="160" width="244" height="190" rx="16" fill="#DDD6FE"/>
+    <text x="658" y="207" fill="#3B0764" font-family="Inter, Arial, sans-serif" font-size="25" font-weight="900">3. Learning</text>
+    <text x="658" y="245" fill="#5B21B6" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">LinUCB edge arms</text>
+    <text x="658" y="271" fill="#5B21B6" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">LOO fragment credit</text>
+    <text x="658" y="297" fill="#5B21B6" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">scalar or Pareto reward</text>
+
+    <rect x="904" y="160" width="244" height="190" rx="16" fill="#FED7AA"/>
+    <text x="936" y="207" fill="#7C2D12" font-family="Inter, Arial, sans-serif" font-size="25" font-weight="900">4. Evaluation</text>
+    <text x="936" y="245" fill="#9A3412" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">validation path search</text>
+    <text x="936" y="271" fill="#9A3412" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">matched-budget baselines</text>
+    <text x="936" y="297" fill="#9A3412" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">JSONL/CSV diagnostics</text>
   </g>
 
-  <path d="M366 268 H443" stroke="#334155" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
-  <path d="M743 268 H820" stroke="#334155" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M318 255 H334" stroke="#334155" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M596 255 H612" stroke="#334155" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M874 255 H890" stroke="#334155" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
 
   <g filter="url(#shadow)">
-    <rect x="294" y="408" width="612" height="70" rx="35" fill="url(#green)"/>
-    <text x="346" y="453" fill="#052E2B" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="900">
-      Prompt Policy Graph = typed graph + guarded runtime + learned route policy
-    </text>
+    <rect x="168" y="398" width="864" height="70" rx="16" fill="#0F172A"/>
+    <text x="214" y="443" fill="#F8FAFC" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="900">Prompt Policy Graph = reusable fragments + input-conditioned route policy</text>
   </g>
 </svg>

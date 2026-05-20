@@ -1,76 +1,80 @@
 <svg width="1200" height="540" viewBox="0 0 1200 540" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">PPG architecture pipeline</title>
-  <desc id="desc">A colorful pipeline from input features through guards, LinUCB routing, prompt assembly, LM response, reward, and policy update.</desc>
+  <desc id="desc">The architecture routes inputs through feature extraction, guards, LinUCB, prompt assembly, LM calls, reward computation, credit assignment, and evaluation calibration.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="540" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#FEFCE8"/>
-      <stop offset="0.55" stop-color="#ECFEFF"/>
-      <stop offset="1" stop-color="#FDF2F8"/>
+      <stop offset="0" stop-color="#F8FAFC"/>
+      <stop offset="0.58" stop-color="#F0FDFA"/>
+      <stop offset="1" stop-color="#FFF7ED"/>
     </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="14" stdDeviation="15" flood-color="#0F172A" flood-opacity="0.14"/>
+    <filter id="shadow" x="-18%" y="-18%" width="136%" height="136%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#0F172A" flood-opacity="0.14"/>
     </filter>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+      <path d="M0 0 L10 5 L0 10 Z" fill="#475569"/>
     </marker>
   </defs>
 
   <rect width="1200" height="540" rx="26" fill="url(#bg)"/>
-  <text x="64" y="72" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="36" font-weight="900">Runtime architecture</text>
-  <text x="66" y="105" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="600">One input becomes a feature-conditioned path through typed prompt fragments.</text>
-
-  <g stroke="#CBD5E1" stroke-width="2" opacity="0.8">
-    <path d="M120 414 C278 344 368 443 528 381 C706 312 775 421 965 354 C1047 326 1106 341 1150 375"/>
-    <path d="M72 146 C248 198 381 116 540 170 C706 226 808 108 967 157 C1055 184 1107 174 1158 136"/>
-  </g>
+  <text x="64" y="70" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="36" font-weight="900">Runtime architecture</text>
+  <text x="66" y="105" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">PPG-fast makes one LM call; production mode can add escalation and richer feedback.</text>
 
   <g filter="url(#shadow)">
-    <rect x="60" y="168" width="150" height="94" rx="18" fill="#38BDF8"/>
-    <text x="90" y="206" fill="#082F49" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="900">Input</text>
-    <text x="88" y="235" fill="#0C4A6E" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">x</text>
+    <rect x="56" y="166" width="136" height="86" rx="14" fill="#BFDBFE"/>
+    <text x="91" y="201" fill="#1E3A8A" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="900">Input</text>
+    <text x="89" y="228" fill="#1D4ED8" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800">raw task x</text>
 
-    <rect x="250" y="168" width="170" height="94" rx="18" fill="#A7F3D0"/>
-    <text x="280" y="205" fill="#064E3B" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">Features</text>
-    <text x="278" y="235" fill="#065F46" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">length, cluster, entropy</text>
+    <rect x="228" y="166" width="160" height="86" rx="14" fill="#BBF7D0"/>
+    <text x="258" y="201" fill="#064E3B" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="900">Features</text>
+    <text x="250" y="228" fill="#166534" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800">length, constraints</text>
 
-    <rect x="460" y="168" width="170" height="94" rx="18" fill="#FDE68A"/>
-    <text x="496" y="205" fill="#713F12" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">Guards</text>
-    <text x="490" y="235" fill="#854D0E" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">w dot phi >= b</text>
+    <rect x="424" y="166" width="152" height="86" rx="14" fill="#FDE68A"/>
+    <text x="466" y="201" fill="#713F12" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="900">Guards</text>
+    <text x="455" y="228" fill="#92400E" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800">w.phi &gt;= bias</text>
 
-    <rect x="670" y="168" width="170" height="94" rx="18" fill="#C4B5FD"/>
-    <text x="710" y="205" fill="#3B0764" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">LinUCB</text>
-    <text x="694" y="235" fill="#581C87" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">select active edge</text>
+    <rect x="612" y="166" width="152" height="86" rx="14" fill="#DDD6FE"/>
+    <text x="650" y="201" fill="#3B0764" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="900">LinUCB</text>
+    <text x="637" y="228" fill="#5B21B6" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800">select edge arm</text>
 
-    <rect x="880" y="168" width="170" height="94" rx="18" fill="#FDA4AF"/>
-    <text x="908" y="205" fill="#7F1D1D" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">Assembler</text>
-    <text x="916" y="235" fill="#881337" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">render path</text>
+    <rect x="800" y="166" width="152" height="86" rx="14" fill="#FBCFE8"/>
+    <text x="832" y="201" fill="#831843" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="900">Assembler</text>
+    <text x="824" y="228" fill="#BE185D" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800">render path</text>
 
-    <rect x="540" y="344" width="170" height="94" rx="18" fill="#67E8F9"/>
-    <text x="584" y="381" fill="#164E63" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">LM Call</text>
-    <text x="576" y="411" fill="#155E75" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">response y</text>
-
-    <rect x="760" y="344" width="170" height="94" rx="18" fill="#FDBA74"/>
-    <text x="803" y="381" fill="#7C2D12" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">Reward</text>
-    <text x="792" y="411" fill="#7C2D12" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">task, cost, variance</text>
-
-    <rect x="980" y="344" width="160" height="94" rx="18" fill="#86EFAC"/>
-    <text x="1014" y="381" fill="#14532D" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="900">Update</text>
-    <text x="1010" y="411" fill="#166534" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">policy + guards</text>
+    <rect x="988" y="166" width="152" height="86" rx="14" fill="#FED7AA"/>
+    <text x="1030" y="201" fill="#7C2D12" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="900">LM</text>
+    <text x="1011" y="228" fill="#9A3412" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800">complete prompt</text>
   </g>
 
-  <path d="M210 215 H236" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
-  <path d="M420 215 H446" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
-  <path d="M630 215 H656" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
-  <path d="M840 215 H866" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
-  <path d="M965 262 C965 322 682 302 642 337" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
-  <path d="M710 391 H746" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
-  <path d="M930 391 H966" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
-  <path d="M1061 344 C1052 284 828 303 776 265" stroke="#475569" stroke-width="4" stroke-linecap="round" stroke-dasharray="9 9" marker-end="url(#arrow)"/>
+  <path d="M192 209 H214" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M388 209 H410" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M576 209 H598" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M764 209 H786" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M952 209 H974" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
 
-  <g>
-    <circle cx="1060" cy="86" r="12" fill="#38BDF8"/>
-    <circle cx="1092" cy="86" r="12" fill="#FACC15"/>
-    <circle cx="1124" cy="86" r="12" fill="#F472B6"/>
-    <text x="938" y="93" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="700">PPG-fast: 1 LM call</text>
+  <g filter="url(#shadow)">
+    <rect x="132" y="344" width="188" height="88" rx="14" fill="#E0F2FE"/>
+    <text x="174" y="380" fill="#164E63" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="900">Reward</text>
+    <text x="159" y="408" fill="#155E75" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800">task, cost, variance</text>
+
+    <rect x="372" y="344" width="188" height="88" rx="14" fill="#DCFCE7"/>
+    <text x="418" y="380" fill="#14532D" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="900">LOO Credit</text>
+    <text x="405" y="408" fill="#166534" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800">fragment utility</text>
+
+    <rect x="612" y="344" width="188" height="88" rx="14" fill="#FFEDD5"/>
+    <text x="654" y="380" fill="#7C2D12" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="900">Update</text>
+    <text x="641" y="408" fill="#9A3412" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800">arms and guards</text>
+
+    <rect x="852" y="344" width="216" height="88" rx="14" fill="#F3E8FF"/>
+    <text x="899" y="380" fill="#581C87" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="900">Calibrate/Eval</text>
+    <text x="885" y="408" fill="#6D28D9" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800">path search and baselines</text>
   </g>
+
+  <path d="M1064 252 C1060 312 260 288 226 338" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M320 388 H358" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M560 388 H598" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M800 388 H838" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M706 344 C686 302 688 286 688 257" stroke="#475569" stroke-width="4" stroke-linecap="round" stroke-dasharray="8 8" marker-end="url(#arrow)"/>
+
+  <rect x="850" y="70" width="286" height="42" rx="21" fill="#0F172A"/>
+  <text x="878" y="97" fill="#F8FAFC" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="900">Default: PPG-fast, one LM call</text>
 </svg>
