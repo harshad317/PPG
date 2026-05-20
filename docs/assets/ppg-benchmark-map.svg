@@ -1,50 +1,52 @@
-<svg width="1200" height="520" viewBox="0 0 1200 520" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">PPG benchmark coverage</title>
-  <desc id="desc">A benchmark coverage map showing math, QA, instruction following, reasoning, multitask exams, and code synthesis loaders.</desc>
+<svg width="1200" height="640" viewBox="0 0 1200 640" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">PPG benchmark support map</title>
+  <desc id="desc">Benchmark map generated from the current runner, loader classes, and fragment graph registry. Runner support includes nine targets, with seven dedicated fragment graphs and two fallbacks.</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="520" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#F8FAFC"/>
-      <stop offset="0.5" stop-color="#EFF6FF"/>
-      <stop offset="1" stop-color="#F0FDF4"/>
-    </linearGradient>
-    <filter id="shadow" x="-18%" y="-18%" width="136%" height="136%">
-      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#0F172A" flood-opacity="0.13"/>
+    <filter id="shadow" x="-14%" y="-16%" width="128%" height="132%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0F172A" flood-opacity="0.14"/>
     </filter>
   </defs>
 
-  <rect width="1200" height="520" rx="26" fill="url(#bg)"/>
-  <text x="64" y="70" fill="#111827" font-family="Inter, Arial, sans-serif" font-size="36" font-weight="900">Benchmark coverage</text>
-  <text x="66" y="105" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="700">Loaders normalize benchmark rows into EvalExample objects for one evaluation harness.</text>
+  <rect width="1200" height="640" rx="24" fill="#F8FAFC"/>
+  <text x="64" y="74" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="40" font-weight="900">Benchmark Support</text>
+  <text x="66" y="108" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">Runner targets, loader-only support, and fragment graph fallbacks from the current code.</text>
 
   <g filter="url(#shadow)">
-    <rect x="70" y="152" width="318" height="130" rx="16" fill="#BFDBFE"/>
-    <text x="104" y="194" fill="#1E3A8A" font-family="Inter, Arial, sans-serif" font-size="23" font-weight="900">Math reasoning</text>
-    <text x="104" y="230" fill="#1D4ED8" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">GSM8K</text>
-    <text x="104" y="256" fill="#1D4ED8" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">LiveBench Math</text>
+    <rect x="74" y="152" width="322" height="354" rx="14" fill="#DBEAFE" stroke="#93C5FD"/>
+    <text x="104" y="194" fill="#1E3A8A" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="900">Dedicated Graphs</text>
+    <text x="104" y="226" fill="#1D4ED8" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="800">from ppg/data/fragments.py</text>
+    <text x="104" y="270" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">GSM8K</text>
+    <text x="104" y="300" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">IFBench</text>
+    <text x="104" y="330" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">TruthfulQA</text>
+    <text x="104" y="360" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">ARC-Challenge</text>
+    <text x="104" y="390" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">LiveBench Math</text>
+    <text x="104" y="420" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">HotpotQA</text>
+    <text x="104" y="450" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">MBPP</text>
 
-    <rect x="441" y="152" width="318" height="130" rx="16" fill="#BBF7D0"/>
-    <text x="475" y="194" fill="#064E3B" font-family="Inter, Arial, sans-serif" font-size="23" font-weight="900">Knowledge and QA</text>
-    <text x="475" y="230" fill="#166534" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">HotpotQA, DROP</text>
-    <text x="475" y="256" fill="#166534" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">TruthfulQA</text>
+    <rect x="440" y="152" width="322" height="354" rx="14" fill="#D1FAE5" stroke="#6EE7B7"/>
+    <text x="470" y="194" fill="#064E3B" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="900">Runner Targets</text>
+    <text x="470" y="226" fill="#047857" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="800">from scripts/run_benchmark.py</text>
+    <text x="470" y="270" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">arc_challenge</text>
+    <text x="470" y="300" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">drop</text>
+    <text x="470" y="330" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">gsm8k</text>
+    <text x="470" y="360" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">hotpotqa</text>
+    <text x="470" y="390" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">ifbench</text>
+    <text x="470" y="420" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">livebench_math</text>
+    <text x="470" y="450" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="800">mbpp, mmlu, truthfulqa</text>
 
-    <rect x="812" y="152" width="318" height="130" rx="16" fill="#FBCFE8"/>
-    <text x="846" y="194" fill="#831843" font-family="Inter, Arial, sans-serif" font-size="23" font-weight="900">Instruction following</text>
-    <text x="846" y="230" fill="#BE185D" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">IFBench runner target</text>
-    <text x="846" y="256" fill="#BE185D" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">IFEval loader support</text>
+    <rect x="806" y="152" width="322" height="354" rx="14" fill="#FEF3C7" stroke="#FCD34D"/>
+    <text x="836" y="194" fill="#78350F" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="900">Fallbacks And Loaders</text>
+    <text x="836" y="226" fill="#A16207" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="800">from _GRAPH_MAP and loaders.py</text>
+    <text x="836" y="276" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">DROP -> HotpotQA graph</text>
+    <text x="836" y="310" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">MMLU -> GSM8K graph</text>
+    <text x="836" y="356" fill="#7C2D12" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">IFEval loader only</text>
+    <text x="836" y="390" fill="#92400E" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="800">not in runner target list</text>
+    <text x="836" y="438" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">Metrics:</text>
+    <text x="836" y="468" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="800">numeric, F1, MCQ, constraints, code tests</text>
+  </g>
 
-    <rect x="70" y="330" width="318" height="130" rx="16" fill="#FDE68A"/>
-    <text x="104" y="372" fill="#713F12" font-family="Inter, Arial, sans-serif" font-size="23" font-weight="900">General reasoning</text>
-    <text x="104" y="408" fill="#92400E" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">BIG-Bench Hard</text>
-    <text x="104" y="434" fill="#92400E" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">ARC-Challenge</text>
-
-    <rect x="441" y="330" width="318" height="130" rx="16" fill="#DDD6FE"/>
-    <text x="475" y="372" fill="#3B0764" font-family="Inter, Arial, sans-serif" font-size="23" font-weight="900">Multitask exams</text>
-    <text x="475" y="408" fill="#5B21B6" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">MMLU</text>
-    <text x="475" y="434" fill="#5B21B6" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">57 subject configs</text>
-
-    <rect x="812" y="330" width="318" height="130" rx="16" fill="#FED7AA"/>
-    <text x="846" y="372" fill="#7C2D12" font-family="Inter, Arial, sans-serif" font-size="23" font-weight="900">Code synthesis</text>
-    <text x="846" y="408" fill="#9A3412" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">MBPP</text>
-    <text x="846" y="434" fill="#9A3412" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="900">subprocess pass@1 metric</text>
+  <g transform="translate(172 548)">
+    <rect x="0" y="0" width="856" height="44" rx="22" fill="#0F172A"/>
+    <text x="32" y="29" fill="#E2E8F0" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="900">Summary: 10 loader classes, 9 runnable benchmark names, 7 dedicated fragment graphs, 2 runner graph fallbacks.</text>
   </g>
 </svg>

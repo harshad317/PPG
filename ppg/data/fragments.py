@@ -1,11 +1,10 @@
 """
 Seed fragment library for PPG experiments.
 
-Contains curated prompt fragments for the 8 core benchmarks:
+Contains curated prompt fragments for the 7 dedicated fragment graphs:
     GSM8K         — grade-school math (multi-step arithmetic)
     IFBench       — instruction following with constraint satisfaction
     TruthfulQA    — factual accuracy under adversarial framing
-    BIG-Bench Hard— challenging multi-step reasoning
     ARC-Challenge — science multiple-choice questions
     LiveBench-Math— competition-level math problems
     HotpotQA      — multi-hop reading comprehension

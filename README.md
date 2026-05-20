@@ -1,12 +1,5 @@
 # Prompt Policy Graphs
 
-![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![Tests](https://img.shields.io/badge/tests-731%20passing-brightgreen)
-![Status](https://img.shields.io/badge/status-research%20prototype-orange)
-![License](https://img.shields.io/badge/license-TBD-lightgrey)
-
-![Prompt Policy Graphs overview](docs/assets/ppg-hero.svg)
-
 Prompt Policy Graphs, or PPG, is a research prototype for learning adaptive
 prompt programs instead of tuning one flat prompt string. A PPG represents a
 prompt as a typed directed acyclic graph of reusable fragments, routes each
@@ -70,8 +63,6 @@ The question becomes "which prompt path should this input take?" rather than
 
 ## Method
 
-![PPG method stack](docs/assets/ppg-method-stack.svg)
-
 At the core of PPG:
 
 ```text
@@ -104,8 +95,6 @@ fragment utilities. Production mode can optionally evolve fragment text and add
 specialized branches from reflection-discovered failure modes.
 
 ## Architecture
-
-![PPG architecture pipeline](docs/assets/ppg-architecture.svg)
 
 ### Runtime Flow
 
@@ -268,11 +257,6 @@ python scripts/run_benchmark.py gsm8k \
 # Instruction following with the IFBench constraint checker
 python scripts/run_benchmark.py ifbench --model gpt-4o-mini --production
 
-# BIG-Bench Hard, one task config
-python scripts/run_benchmark.py bigbench_hard \
-  --model gpt-4o-mini \
-  --bbh-task causal_judgement
-
 # MMLU, one subject
 python scripts/run_benchmark.py mmlu \
   --model gpt-4o-mini \
@@ -308,12 +292,10 @@ Useful flags:
 | `--output-dir DIR` | Writes result JSON files to `DIR` |
 
 The runner currently supports these benchmark names: `arc_challenge`,
-`bigbench_hard`, `drop`, `gsm8k`, `hotpotqa`, `ifbench`, `livebench_math`,
-`mbpp`, `mmlu`, and `truthfulqa`.
+`drop`, `gsm8k`, `hotpotqa`, `ifbench`, `livebench_math`, `mbpp`, `mmlu`,
+and `truthfulqa`.
 
 ## Training
-
-![PPG training loop](docs/assets/ppg-training-loop.svg)
 
 `PPGTrainer` runs three phases:
 
@@ -507,8 +489,6 @@ Supported ablations:
 
 ## Benchmark Support
 
-![PPG benchmark coverage map](docs/assets/ppg-benchmark-map.svg)
-
 Benchmark loaders convert Hugging Face datasets into `EvalExample` objects and
 expose recommended metrics or constraint checkers.
 
@@ -518,7 +498,6 @@ expose recommended metrics or constraint checkers.
 | IFBench | Yes | `IFBenchLoader` | `IFBenchConstraintChecker` via constraint scoring | Dedicated |
 | IFEval | Loader only | `IFEvalLoader` | `IFEvalOfficialChecker` when installed, keyword fallback otherwise | None |
 | TruthfulQA | Yes | `TruthfulQALoader` | `F1Metric` | Dedicated |
-| BIG-Bench Hard | Yes | `BigBenchHardLoader` | `ExactMatchMetric` | Dedicated |
 | ARC-Challenge | Yes | `ARCChallengeLoader` | `MultipleChoiceMetric` | Dedicated |
 | LiveBench Math | Yes | `LiveBenchMathLoader` | `NumericExactMatchMetric` | Dedicated |
 | HotpotQA | Yes | `HotpotQALoader` | `F1Metric` | Dedicated |
@@ -652,7 +631,7 @@ ruff check .
 Last verified local run:
 
 ```text
-731 passed in 3.54s
+703 passed in 7.67s
 ```
 
 ## Citation

@@ -393,7 +393,7 @@ def main():
                         help="Include PPG training + eval when using --run-mipro/--run-gepa")
     parser.add_argument("--gepa-calls", type=int, default=500, dest="gepa_calls",
                         help="GEPA max_metric_calls heavy budget (default: 500)")
-parser.add_argument("--mmlu-subject",default="all", dest="mmlu_subject",
+    parser.add_argument("--mmlu-subject", default="all", dest="mmlu_subject",
                         help="MMLU subject (default: all)")
     parser.add_argument("--cache-dir",   default=".lm_cache", dest="cache_dir",
                         help="Disk cache dir for LM responses (default: .lm_cache)")
