@@ -234,6 +234,10 @@ class HotpotQALoader:
             EvalExample(
                 x=self._format_input(row, include_context),
                 y_star=row["answer"],
+                metadata={
+                    "question_type": row.get("type", ""),
+                    "level": row.get("level", ""),
+                },
             )
             for row in rows
         ]

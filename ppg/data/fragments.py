@@ -712,21 +712,40 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
             ),
             # Variant: minimal CoT
             "Think through which facts are needed and how they connect.",
+            # Variant: question decomposition
+            (
+                "Break the question into sub-questions:\n"
+                "Sub-Q1: What intermediate fact do I need?\n"
+                "Sub-Q2: Which passage answers Sub-Q1?\n"
+                "Sub-Q3: Using that fact, which passage answers the original question?\n"
+                "Combine the answers to reach the final answer."
+            ),
+            # Variant: comparison with yes/no awareness
+            (
+                "If the question compares two entities, find the relevant attribute "
+                "for each entity in the passages and compare them directly. "
+                "If the question asks whether something is true, verify the claim "
+                "against the passages and answer 'yes' or 'no'."
+            ),
         ],
         "compression": [
             "Reason briefly. Do not quote entire passages — extract only the relevant facts.",
         ],
         "output_contract": [
-            # HotpotQA answers are typically short spans
+            # HotpotQA answers are typically short spans or yes/no
             (
-                "Your answer must be a short phrase or a few words — NOT a full sentence. "
+                "If the answer is yes or no, write ONLY 'yes' or 'no'. "
+                "Otherwise, your answer must be a short phrase — NOT a full sentence. "
                 "Do not include any explanation in your answer. "
                 "Write only the answer."
             ),
             # Variant: even stricter
-            "Answer in 1–5 words. No punctuation unless part of the answer.",
-            # Variant: single entity
-            "Write ONLY the answer entity. No sentences, no reasoning, no preamble.",
+            "Answer in 1–5 words. For yes/no questions, answer only 'yes' or 'no'.",
+            # Variant: single entity or yes/no
+            (
+                "Write ONLY the answer. No sentences, no reasoning, no preamble. "
+                "For yes/no questions, write exactly 'yes' or 'no'."
+            ),
         ],
         "few_shot": [
             # v1: bridge-entity multi-hop example
@@ -762,7 +781,18 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "Answer: London\n\n"
                 "Now answer the question above using the same multi-hop approach."
             ),
-            # v4: control variant
+            # v4: yes/no comparison example
+            (
+                "Here is an example of a yes/no comparison question:\n\n"
+                "Context: Passage 1: River A is 500 km long. "
+                "Passage 2: River B is 350 km long.\n"
+                "Question: Is River A longer than River B?\n"
+                "Reasoning: River A = 500 km (Passage 1), River B = 350 km (Passage 2). "
+                "500 > 350.\n"
+                "Answer: yes\n\n"
+                "Now answer the question above using the same approach."
+            ),
+            # v5: control variant
             "Answer the question using facts from the provided context.",
         ],
     },
