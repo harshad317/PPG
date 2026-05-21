@@ -64,17 +64,22 @@ def select_path_by_validation(
     n_workers: int = 1,
     show_progress: bool = False,
     early_stop_patience: int = 10,
+    token_efficiency_weight: float = 0.02,
+    max_tokens_ref: int = 2048,
 ) -> PathSearchResult:
     """
-    Select the complete graph path with highest validation score.
+    Select the complete graph path with highest token-adjusted validation score.
+
+    Adjusted score = val_score - token_efficiency_weight * (mean_tokens / max_tokens_ref).
+    This prevents marginal accuracy gains from justifying massive token bloat
+    (e.g. a 0.004 accuracy gain with 2x token count).
 
     Paths are ranked by learned utility before evaluation. When
     ``max_candidates`` is set, only that many top-utility paths are scored.
     Early stopping fires when the best score hasn't improved for
     ``early_stop_patience`` consecutive paths.
 
-    Ties prefer higher learned utility, then fewer tokens.  Test examples are
-    never used; this is an optimizer/calibration step over the validation split.
+    Test examples are never used; this is a calibration step over the val split.
     """
     if not examples:
         raise ValueError("examples must be non-empty")
@@ -118,7 +123,8 @@ def select_path_by_validation(
             n_paths_scored=n_scored,
             total_paths=total_paths,
         )
-        if best is None or _is_better(candidate, best):
+        if best is None or _is_better(candidate, best,
+                                       token_efficiency_weight, max_tokens_ref):
             best = candidate
             no_improve_count = 0
         else:
@@ -178,14 +184,24 @@ def _score_response(
     return metric.score(response, example.y_star)
 
 
-def _is_better(candidate: PathSearchResult, incumbent: PathSearchResult) -> bool:
+def _is_better(
+    candidate: PathSearchResult,
+    incumbent: PathSearchResult,
+    token_weight: float = 0.02,
+    max_tokens_ref: int = 2048,
+) -> bool:
+    def _adj(r: PathSearchResult) -> float:
+        return r.val_score - token_weight * (r.mean_tokens / max_tokens_ref)
+
+    c_adj = _adj(candidate)
+    i_adj = _adj(incumbent)
     return (
-        candidate.val_score,
+        c_adj,
         candidate.utility,
         -candidate.mean_tokens,
         -len(candidate.path),
     ) > (
-        incumbent.val_score,
+        i_adj,
         incumbent.utility,
         -incumbent.mean_tokens,
         -len(incumbent.path),
