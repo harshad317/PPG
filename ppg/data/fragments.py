@@ -1,7 +1,7 @@
 """
 Seed fragment library for PPG experiments.
 
-Contains curated prompt fragments for the 7 dedicated fragment graphs:
+Contains curated prompt fragments for the 9 dedicated fragment graphs:
     GSM8K         — grade-school math (multi-step arithmetic)
     IFBench       — instruction following with constraint satisfaction
     TruthfulQA    — factual accuracy under adversarial framing
@@ -9,6 +9,8 @@ Contains curated prompt fragments for the 7 dedicated fragment graphs:
     LiveBench-Math— competition-level math problems
     HotpotQA      — multi-hop reading comprehension
     MBPP          — Python function synthesis
+    DROP          — discrete reasoning over paragraphs (arithmetic, counting, sorting)
+    MMLU          — massive multitask language understanding (57-subject MCQ)
 
 Fragment design principles
 --------------------------
@@ -87,6 +89,24 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
             ),
             # Variant: Zero-shot CoT trigger (Kojima et al. 2022)
             "Let's think step by step.",
+            # Variant: Equation-first (write all equations before solving)
+            (
+                "First, write out the key equations or expressions needed to solve this problem.\n"
+                "Then evaluate each expression to get the numeric result.\n"
+                "Show: Equations → Calculations → Final number."
+            ),
+            # Variant: Verify-then-answer (solve, sanity-check, then commit)
+            (
+                "Solve the problem. Then verify your answer:\n"
+                "- Does the answer make sense given the problem context?\n"
+                "- Re-check the final arithmetic operation.\n"
+                "If the check fails, redo the calculation. Then state the final answer."
+            ),
+            # Variant: Compute-only (minimal text, just arithmetic)
+            (
+                "Calculate directly. Write only the arithmetic operations and results.\n"
+                "No explanations, no restating the problem. Just compute."
+            ),
         ],
         "compression": [
             # Used when λ_c token penalty is high
@@ -329,6 +349,13 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "what sounds right.\n\n"
                 "{input}"
             ),
+            # v3: skeptical framing
+            (
+                "Answer the question below. "
+                "Do not assume the premise is correct. "
+                "If the most popular answer is wrong, say so.\n\n"
+                "{input}"
+            ),
         ],
         "domain_primer": [
             (
@@ -354,6 +381,19 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
             ),
             # v3: minimal CoT
             "Think carefully about whether common assumptions apply here.",
+            # v4: base-rate check (resist framing effects)
+            (
+                "Ask yourself: what would a careful, skeptical expert say?\n"
+                "If the intuitive answer feels too easy or too popular, "
+                "reconsider whether it is actually correct.\n"
+                "Then answer."
+            ),
+            # v5: source evaluation
+            (
+                "Consider the source of the common belief about this topic. "
+                "Is it backed by scientific evidence or just folk wisdom? "
+                "Answer based on evidence, not convention."
+            ),
         ],
         "compression": [
             "Answer directly. No unnecessary hedging or caveats.",
@@ -417,6 +457,12 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "Reason about which answer is correct before choosing.\n\n"
                 "{input}"
             ),
+            # v3: challenge-level emphasis
+            (
+                "This is a challenging science question. "
+                "Read carefully — the correct answer may not be the most obvious one.\n\n"
+                "{input}"
+            ),
         ],
         "domain_primer": [
             (
@@ -440,6 +486,19 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
             ),
             # v3: minimal CoT
             "Think about which scientific principle applies, then choose the best answer.",
+            # v4: per-option analysis
+            (
+                "For each answer choice, briefly state whether it is consistent "
+                "with known science:\n"
+                "A: ...\nB: ...\nC: ...\nD: ...\n"
+                "Then select the correct one."
+            ),
+            # v5: analogy-based
+            (
+                "Think of a real-world example or analogy that illustrates "
+                "the scientific concept in this question. "
+                "Use that to determine the correct answer."
+            ),
         ],
         "compression": [
             "Choose the correct answer. Brief reasoning only.",
@@ -508,6 +567,12 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "beyond straightforward calculation.\n\n"
                 "{input}"
             ),
+            # v3: precision-focused
+            (
+                "Solve the following math problem precisely. "
+                "Watch for off-by-one errors and edge cases.\n\n"
+                "{input}"
+            ),
         ],
         "domain_primer": [
             (
@@ -535,6 +600,25 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
             ),
             # v3: minimal CoT
             "Solve step by step. Check your answer at the end.",
+            # v4: work backwards
+            (
+                "If possible, start from the answer constraints and work backwards. "
+                "What conditions must the answer satisfy? "
+                "Use those constraints to narrow down or directly compute the answer."
+            ),
+            # v5: casework
+            (
+                "Break the problem into cases if applicable. "
+                "Solve each case separately. "
+                "Combine the results. "
+                "Check for overcounting or missed cases."
+            ),
+            # v6: invariant/symmetry
+            (
+                "Look for invariants, symmetry, or patterns in the problem. "
+                "Exploit any structure to simplify the computation. "
+                "Verify with a small example if possible."
+            ),
         ],
         "compression": [
             "Solve concisely. Show key steps only, skip trivial algebra.",
@@ -604,6 +688,8 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "The question requires reasoning across two or more passages.\n\n"
                 "{input}"
             ),
+            # Variant: minimal framing (reduces overhead for long contexts)
+            "{input}\n\nAnswer the question above using the provided context.",
         ],
         "domain_primer": [
             (
@@ -628,6 +714,17 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
             ),
             # Variant: minimal CoT
             "Think through which facts are needed and how they connect.",
+            # Variant: direct extraction (skip reasoning, find answer entity)
+            (
+                "Scan the passages for the answer. "
+                "Do not explain your reasoning. "
+                "Just extract the answer directly."
+            ),
+            # Variant: two-sentence chain (concise multi-hop)
+            (
+                "In one sentence, state the key linking fact. "
+                "In a second sentence, state the answer."
+            ),
         ],
         "compression": [
             "Reason briefly. Do not quote entire passages — extract only the relevant facts.",
@@ -641,6 +738,8 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
             ),
             # Variant: even stricter
             "Answer in 1–5 words. No punctuation unless part of the answer.",
+            # Variant: single entity
+            "Write ONLY the answer entity. No sentences, no reasoning, no preamble.",
         ],
         "few_shot": [
             # v1: bridge-entity multi-hop example
@@ -682,6 +781,205 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
     },
 
     # -----------------------------------------------------------------------
+    # DROP — discrete reasoning over paragraphs
+    # -----------------------------------------------------------------------
+    "drop": {
+        "task_framing": [
+            # v1: direct passage + question framing
+            (
+                "Read the passage below and answer the question. "
+                "The answer may require arithmetic, counting, or comparison.\n\n"
+                "{input}"
+            ),
+            # v2: explicit quantitative reasoning emphasis
+            (
+                "Read the passage carefully. Extract the relevant numbers or facts, "
+                "then compute the answer.\n\n"
+                "{input}"
+            ),
+            # v3: minimal
+            "{input}\n\nAnswer the question using information from the passage.",
+        ],
+        "domain_primer": [
+            (
+                "You are answering questions that require discrete reasoning over text passages. "
+                "Common operations include: arithmetic (addition, subtraction), counting entities "
+                "or events, sorting/comparing quantities, and date or time calculations. "
+                "Extract the exact values from the passage before computing."
+            ),
+        ],
+        "reasoning_style": [
+            # v1: extract-then-compute
+            (
+                "Step 1: Identify the relevant numbers or facts from the passage.\n"
+                "Step 2: Determine what operation is needed (count, subtract, compare, etc.).\n"
+                "Step 3: Compute the answer."
+            ),
+            # v2: structured extraction
+            (
+                "First, quote the specific sentence(s) from the passage that contain "
+                "the information needed to answer.\n"
+                "Then perform the required calculation or comparison.\n"
+                "State the final answer."
+            ),
+            # v3: count and verify
+            (
+                "If the question asks 'how many', carefully count each qualifying item. "
+                "If it asks for a difference, find both values and subtract. "
+                "If it asks for a comparison, identify both items and compare. "
+                "Double-check your count or arithmetic before answering."
+            ),
+            # v4: minimal CoT
+            "Extract the relevant facts, then compute or compare to get the answer.",
+            # v5: operation-first
+            (
+                "Identify the operation: is this counting, arithmetic, sorting, or comparison?\n"
+                "Then extract the needed values and apply that operation."
+            ),
+        ],
+        "compression": [
+            "Answer briefly. Show only the key extracted values and the final computation.",
+        ],
+        "output_contract": [
+            # v1: short span
+            (
+                "Write only the answer — a number, name, date, or short phrase. "
+                "No full sentences. No explanation."
+            ),
+            # v2: number or entity
+            "State just the answer. If it is a number, write only the number.",
+            # v3: flexible but concise
+            "Answer in 1-5 words. No reasoning, no preamble.",
+        ],
+        "few_shot": [
+            # v1: arithmetic example
+            (
+                "Here is an example:\n\n"
+                "Passage: In the first quarter, the Eagles scored 7 points. "
+                "In the second quarter, they scored 14 points. "
+                "The Bears scored 10 points in the first quarter.\n"
+                "Question: How many more points did the Eagles score than the Bears in total?\n"
+                "Reasoning: Eagles total = 7 + 14 = 21. Bears total = 10. Difference = 21 - 10 = 11.\n"
+                "Answer: 11\n\n"
+                "Now answer the question above."
+            ),
+            # v2: counting example
+            (
+                "Here is an example:\n\n"
+                "Passage: John caught 3 touchdown passes. Mike caught 2 touchdown passes. "
+                "Tom caught 1 touchdown pass.\n"
+                "Question: How many players caught at least 2 touchdown passes?\n"
+                "Reasoning: John (3) and Mike (2) caught at least 2. Tom (1) did not.\n"
+                "Answer: 2\n\n"
+                "Now answer the question above."
+            ),
+            # v3: control
+            "Read the passage and answer the question directly.",
+        ],
+    },
+
+    # -----------------------------------------------------------------------
+    # MMLU — massive multitask language understanding
+    # -----------------------------------------------------------------------
+    "mmlu": {
+        "task_framing": [
+            # v1: standard MCQ framing
+            (
+                "Answer the following multiple-choice question. "
+                "Choose the best answer.\n\n"
+                "{input}"
+            ),
+            # v2: reasoning-first
+            (
+                "Read the question and all answer choices carefully. "
+                "Think about which answer is correct before choosing.\n\n"
+                "{input}"
+            ),
+            # v3: knowledge-recall emphasis
+            (
+                "Use your knowledge to answer the following question. "
+                "Select the most accurate answer.\n\n"
+                "{input}"
+            ),
+        ],
+        "domain_primer": [
+            (
+                "You are answering academic multiple-choice questions spanning many subjects: "
+                "science, humanities, social science, and professional fields. "
+                "Apply your knowledge carefully. When uncertain, use process of elimination."
+            ),
+        ],
+        "reasoning_style": [
+            # v1: process of elimination
+            (
+                "Consider each answer choice.\n"
+                "Eliminate choices that are clearly wrong.\n"
+                "Among the remaining options, select the best answer."
+            ),
+            # v2: recall then select
+            (
+                "First, recall the relevant concept or fact being tested.\n"
+                "Then determine which answer choice matches."
+            ),
+            # v3: evaluate each option
+            (
+                "Briefly evaluate each answer option:\n"
+                "- Is it factually correct?\n"
+                "- Does it directly answer the question?\n"
+                "Select the option that is both correct and most relevant."
+            ),
+            # v4: minimal CoT
+            "Think about what you know about this topic, then choose the best answer.",
+            # v5: confidence ranking
+            (
+                "Rank the answer choices by likelihood of being correct. "
+                "Select the one you are most confident about."
+            ),
+        ],
+        "compression": [
+            "Choose the correct answer. Brief reasoning only.",
+        ],
+        "output_contract": [
+            # v1: letter answer with reasoning
+            (
+                "After your reasoning, write your final answer on a new line "
+                "as just the answer label (A, B, C, or D).\n"
+                "Do not repeat the answer text."
+            ),
+            # v2: answer-only
+            "State only the letter of the correct answer (A, B, C, or D).",
+            # v3: structured
+            (
+                "End your response with:\nAnswer: [letter]\n"
+                "where [letter] is A, B, C, or D."
+            ),
+        ],
+        "few_shot": [
+            # v1: general knowledge example
+            (
+                "Here is an example:\n\n"
+                "Question: What is the capital of Australia?\n"
+                "A. Sydney B. Melbourne C. Canberra D. Brisbane\n"
+                "Reasoning: While Sydney is the largest city, Canberra is the capital.\n"
+                "Answer: C\n\n"
+                "Now answer the question above."
+            ),
+            # v2: science example
+            (
+                "Here is an example:\n\n"
+                "Question: Which organelle is responsible for producing ATP?\n"
+                "A. Nucleus B. Ribosome C. Mitochondria D. Golgi apparatus\n"
+                "Reasoning: Mitochondria are the powerhouses of the cell, producing ATP "
+                "through cellular respiration.\n"
+                "Answer: C\n\n"
+                "Now answer the question above."
+            ),
+            # v3: control
+            "Choose the correct answer for the question above.",
+        ],
+    },
+
+    # -----------------------------------------------------------------------
     # MBPP — Python function synthesis
     # -----------------------------------------------------------------------
     "mbpp": {
@@ -698,6 +996,13 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "Implement a Python function for the following specification.\n\n"
                 "{input}\n\n"
                 "Write the function with a concise docstring, then the implementation."
+            ),
+            # Variant: test-aware
+            (
+                "Write a Python function that solves the problem below. "
+                "Pay close attention to the test case — it shows the expected signature "
+                "and return type.\n\n"
+                "{input}"
             ),
         ],
         "domain_primer": [
@@ -725,6 +1030,18 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
             ),
             # Variant: concise
             "Think about edge cases before writing the function.",
+            # Variant: type-driven
+            (
+                "From the test case, determine the function signature: "
+                "parameter names, types, and return type. "
+                "Then implement step by step."
+            ),
+            # Variant: stdlib-aware
+            (
+                "Check if Python's standard library has a built-in or module "
+                "that solves part of this (e.g., itertools, collections, math, re). "
+                "Use it if it simplifies the solution. Then implement."
+            ),
         ],
         "compression": [
             (
@@ -803,7 +1120,7 @@ def build_graph(
 
     Parameters
     ----------
-    benchmark : "gsm8k" | "ifbench" | "truthfulqa" | "arc_challenge" | "livebench_math" | "hotpotqa" | "mbpp"
+    benchmark : "gsm8k" | "ifbench" | "truthfulqa" | "arc_challenge" | "livebench_math" | "hotpotqa" | "mbpp" | "drop" | "mmlu"
     topology  : "lean"  → linear chain (3 nodes, no optional branches)
                 "rich"  → extended graph with DOMAIN_PRIMER and COMPRESSION
     variant   : which template variant to use (0 = primary)

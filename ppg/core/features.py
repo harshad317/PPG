@@ -39,14 +39,25 @@ FEATURE_NAMES: list[str] = [
     "has_format_constraint",    # 1.0 if input mentions bullet/list/json/markdown/header
     "has_keyword_constraint",   # 1.0 if input asks to include/exclude specific words
     "n_constraints_norm",       # normalised count of constraint signals in input
+    # Math/reasoning indicators (pre-LM, keyword-based)
+    # Gives LinUCB routing signal for math and multi-step reasoning benchmarks.
+    "has_numeric_input",        # 1.0 if input contains numbers
+    "n_arithmetic_ops_norm",    # normalised count of arithmetic operators/keywords
+    "n_steps_heuristic_norm",   # sentence count / 10, proxy for reasoning depth
+    "input_word_count_norm",    # word count / 500, proxy for input complexity
+    # Domain indicators (pre-LM, pattern-based)
+    # Gives LinUCB signal for MCQ, code-generation, and adversarial benchmarks.
+    "is_multiple_choice",       # 1.0 if input has A./B./C./D. answer options
+    "is_code_task",             # 1.0 if input mentions def/function/assert/python
+    "has_adversarial_framing",  # 1.0 if input has trick-question/misconception cues
     "embed_cluster_0",          # one-hot: input cluster id
     "embed_cluster_1",
     "embed_cluster_2",
     "embed_cluster_3",
 ]
-FEATURE_DIM: int = len(FEATURE_NAMES)   # 14
+FEATURE_DIM: int = len(FEATURE_NAMES)   # 18
 
-assert FEATURE_DIM == 10 + N_CLUSTERS, "Update FEATURE_NAMES or N_CLUSTERS together"
+assert FEATURE_DIM == 17 + N_CLUSTERS, "Update FEATURE_NAMES or N_CLUSTERS together"
 
 # ---------------------------------------------------------------------------
 # Constraint-type detection (keyword-based, used in extract_pre_lm)
@@ -71,6 +82,36 @@ _KEYWORD_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 _CONSTRAINT_SPLIT = re.compile(r'[;,\.\n]+')
+
+_NUMERIC_PATTERN = re.compile(r'\d+')
+_ARITHMETIC_OPS = re.compile(
+    r'\b(plus|minus|times|divided|multiply|add|subtract|sum|difference|product|'
+    r'quotient|percent|percentage|fraction|ratio|half|double|triple|twice|'
+    r'square|cube|total|each|per|every|cost|price|pay|earn|spend|save|'
+    r'more than|less than|how many|how much|remainder|average|mean)\b|'
+    r'[+\-*/÷×%$]',
+    re.IGNORECASE,
+)
+_SENTENCE_SPLIT = re.compile(r'[.!?]+\s+')
+
+_MCQ_PATTERN = re.compile(
+    r'(?:^|\n)\s*[A-Da-d][.)]\s',
+    re.MULTILINE,
+)
+_CODE_PATTERN = re.compile(
+    r'\b(def |function|assert |return |import |class |print\s*\(|'
+    r'write a (?:python\s+)?function|implement a?\s*function|algorithm|'
+    r'python|program(?:ming)?|code|test case|pass(?:es)? (?:the |all )?\s*test)\b',
+    re.IGNORECASE,
+)
+_ADVERSARIAL_PATTERN = re.compile(
+    r'\b(common(?:ly)?\s+(?:believe|thought|misconception|myth|assumption)|'
+    r'actually|in fact|contrary to|false premise|trick question|'
+    r'popular(?:ly)?\s+believed|many people (?:think|believe)|'
+    r'is it true|true or false|fact or (?:fiction|myth)|'
+    r'do you believe|does\s+\w+\s+really|really true)\b',
+    re.IGNORECASE,
+)
 
 _FEAT_IDX: dict[str, int] = {name: i for i, name in enumerate(FEATURE_NAMES)}
 
@@ -100,6 +141,13 @@ class RuntimeFeatures:
     has_format_constraint:  float = 0.0
     has_keyword_constraint: float = 0.0
     n_constraints_norm:     float = 0.0
+    has_numeric_input:      float = 0.0
+    n_arithmetic_ops_norm:  float = 0.0
+    n_steps_heuristic_norm: float = 0.0
+    input_word_count_norm:  float = 0.0
+    is_multiple_choice:     float = 0.0
+    is_code_task:           float = 0.0
+    has_adversarial_framing:float = 0.0
     embed_cluster:          int   = -1      # -1 = unknown; 0..N_CLUSTERS-1 = valid
 
     def as_vector(self) -> np.ndarray:
@@ -119,6 +167,13 @@ class RuntimeFeatures:
             self.has_format_constraint,
             self.has_keyword_constraint,
             self.n_constraints_norm,
+            self.has_numeric_input,
+            self.n_arithmetic_ops_norm,
+            self.n_steps_heuristic_norm,
+            self.input_word_count_norm,
+            self.is_multiple_choice,
+            self.is_code_task,
+            self.has_adversarial_framing,
             *cluster_onehot,
         ], dtype=np.float64)
 
@@ -362,15 +417,25 @@ class FeatureExtractor:
     def pre_lm(self, x: str) -> RuntimeFeatures:
         """
         Features computable before calling the LM.
-        Fills: input_length_norm, constraint-type indicators, embed_cluster.
-        All post-LM fields remain at their neutral defaults.
+        Fills: input_length_norm, constraint-type indicators, math/reasoning
+        indicators, embed_cluster. All post-LM fields remain at neutral defaults.
         """
+        n_arith = len(_ARITHMETIC_OPS.findall(x))
+        n_sentences = len([s for s in _SENTENCE_SPLIT.split(x) if s.strip()])
+        n_words = len(x.split())
         return RuntimeFeatures(
             input_length_norm=self._length_norm(x),
             has_length_constraint=float(bool(_LENGTH_PATTERNS.search(x))),
             has_format_constraint=float(bool(_FORMAT_PATTERNS.search(x))),
             has_keyword_constraint=float(bool(_KEYWORD_PATTERNS.search(x))),
             n_constraints_norm=min(1.0, len(_CONSTRAINT_SPLIT.split(x)) / 20.0),
+            has_numeric_input=float(bool(_NUMERIC_PATTERN.search(x))),
+            n_arithmetic_ops_norm=min(1.0, n_arith / 10.0),
+            n_steps_heuristic_norm=min(1.0, n_sentences / 10.0),
+            input_word_count_norm=min(1.0, n_words / 500.0),
+            is_multiple_choice=float(bool(_MCQ_PATTERN.search(x))),
+            is_code_task=float(bool(_CODE_PATTERN.search(x))),
+            has_adversarial_framing=float(bool(_ADVERSARIAL_PATTERN.search(x))),
             embed_cluster=self._cluster(x),
         )
 
@@ -393,6 +458,10 @@ class FeatureExtractor:
         """
         sc_dis, entropy = _consistency_features(samples, self.normalizer)
 
+        n_arith = len(_ARITHMETIC_OPS.findall(x))
+        n_sentences = len([s for s in _SENTENCE_SPLIT.split(x) if s.strip()])
+        n_words = len(x.split())
+
         feat = RuntimeFeatures(
             input_length_norm=self._length_norm(x),
             sc_disagreement=sc_dis,
@@ -405,6 +474,13 @@ class FeatureExtractor:
             has_format_constraint=float(bool(_FORMAT_PATTERNS.search(x))),
             has_keyword_constraint=float(bool(_KEYWORD_PATTERNS.search(x))),
             n_constraints_norm=min(1.0, len(_CONSTRAINT_SPLIT.split(x)) / 20.0),
+            has_numeric_input=float(bool(_NUMERIC_PATTERN.search(x))),
+            n_arithmetic_ops_norm=min(1.0, n_arith / 10.0),
+            n_steps_heuristic_norm=min(1.0, n_sentences / 10.0),
+            input_word_count_norm=min(1.0, n_words / 500.0),
+            is_multiple_choice=float(bool(_MCQ_PATTERN.search(x))),
+            is_code_task=float(bool(_CODE_PATTERN.search(x))),
+            has_adversarial_framing=float(bool(_ADVERSARIAL_PATTERN.search(x))),
             embed_cluster=self._cluster(x),
         )
         return feat

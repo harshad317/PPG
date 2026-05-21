@@ -88,10 +88,13 @@ class CreditAssigner:
 
     Parameters
     ----------
-    lm          : LMClient — called once per LOO ablation
-    assembler   : PromptAssembler — builds ablated prompts
-    task_metric : TaskMetric — scores the ablated response
-    config      : CreditAssignerConfig
+    lm            : LMClient — called once per LOO ablation
+    assembler     : PromptAssembler — builds ablated prompts
+    task_metric   : TaskMetric — scores the ablated response
+    credit_metric : optional TaskMetric used instead of task_metric for LOO
+                    scoring.  Useful when the eval metric is noisy (e.g. F1)
+                    but a cleaner signal (e.g. ExactMatch) exists for credit.
+    config        : CreditAssignerConfig
     """
 
     def __init__(
@@ -102,10 +105,12 @@ class CreditAssigner:
         config:             Optional[CreditAssignerConfig] = None,
         constraint_checker: Optional[ConstraintChecker]   = None,
         constraint_as_task: bool                          = False,
+        credit_metric:      Optional[TaskMetric]          = None,
     ):
         self.lm                 = lm
         self.asm                = assembler
         self.metric             = task_metric
+        self._credit_metric     = credit_metric or task_metric
         self.cfg                = config or CreditAssignerConfig()
         self.checker            = constraint_checker
         self.constraint_as_task = constraint_as_task
@@ -261,15 +266,15 @@ class CreditAssigner:
         """
         Compute marginal = r_task(full) - r_task(path_without_node_id).
 
+        Uses credit_metric (defaults to task_metric) for cleaner LOO signal.
         When constraint_as_task=True and a constraint_checker is present,
-        scores are computed via the checker (e.g. IFBenchConstraintChecker)
-        rather than the task metric, matching the training reward signal.
+        scores are computed via the checker instead.
         """
         # Full path score (re-score from cached response — no extra LM call)
         if self.constraint_as_task and self.checker is not None:
             full_score = self.checker.check(trace.lm_response, constraints or [], metadata)
         else:
-            full_score = self.metric.score(trace.lm_response, y_star)
+            full_score = self._credit_metric.score(trace.lm_response, y_star)
 
         # Ablated path: remove node_id, re-assemble, call LM
         ablated_ids      = [n for n in trace.node_ids if n != node_id]
@@ -279,7 +284,7 @@ class CreditAssigner:
         if self.constraint_as_task and self.checker is not None:
             ablated_score = self.checker.check(ablated_response, constraints or [], metadata)
         else:
-            ablated_score = self.metric.score(ablated_response, y_star)
+            ablated_score = self._credit_metric.score(ablated_response, y_star)
 
         marginal = full_score - ablated_score
 
