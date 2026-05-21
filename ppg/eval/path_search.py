@@ -184,6 +184,7 @@ def select_path_by_validation(
         bar.close()
 
     assert best is not None
+    best.n_paths_scored = n_scored
     return best
 
 

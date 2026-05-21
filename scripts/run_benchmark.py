@@ -580,15 +580,13 @@ def main():
 
         # Cleaner credit metrics for LOO signal:
         # - DROP/TruthfulQA: ExactMatch (short answers, clean 0/1)
-        # - HotpotQA: SubstringMatch (ref in pred — less verbose bias than F1,
-        #   more forgiving than EM for span answers and yes/no)
+        # - HotpotQA: F1 (default). SubstringMatch was tried but both full and
+        #   ablated paths contain the short reference → marginals collapse to 0.
+        #   F1's verbose bias is controlled by overhead penalty + diversified candidates.
         credit_metric = None
         if bench in ("drop", "truthfulqa"):
             from ppg.training.reward import ExactMatchMetric
             credit_metric = ExactMatchMetric()
-        elif bench == "hotpotqa":
-            from ppg.training.reward import SubstringMatchMetric
-            credit_metric = SubstringMatchMetric()
 
         credit = CreditAssigner(
             lm=lm,
