@@ -301,6 +301,39 @@ The runner currently supports these benchmark names: `arc_challenge`,
 `drop`, `gsm8k`, `hotpotqa`, `ifbench`, `livebench_math`, `mbpp`, `mmlu`,
 and `truthfulqa`.
 
+## Suite Runner
+
+Use `scripts/run_suite.py` when evaluating PPG changes. It runs the same
+configuration across a benchmark list and summarizes the latest JSON outputs by
+mean score, average rank, wins, and PPG delta versus the best non-PPG method.
+This is the preferred guardrail against optimizing for a single benchmark.
+
+```bash
+# Print the exact commands without spending API calls
+python scripts/run_suite.py \
+  --profile smoke \
+  --model gpt-4.1-mini \
+  --production \
+  --dry-run
+
+# Production suite with PPG plus GEPA/MIPRO comparisons
+python scripts/run_suite.py \
+  --profile standard \
+  --model gpt-4.1-mini \
+  --production \
+  --run-mipro \
+  --run-gepa \
+  --include-ppg \
+  --benchmarks gsm8k,drop,hotpotqa,truthfulqa,arc_challenge,mmlu
+
+# Summarize existing result files only
+python scripts/run_suite.py \
+  --model gpt-4.1-mini \
+  --benchmarks gsm8k,drop,hotpotqa,truthfulqa,arc_challenge,mmlu \
+  --output-dir results_suite \
+  --summarize-only
+```
+
 ## Training
 
 `PPGTrainer` runs three phases:
