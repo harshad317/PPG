@@ -16,7 +16,6 @@ from ppg.core import (
     PromptAssembler,
     FEATURE_DIM,
 )
-from ppg.core.executor import GuardDecision
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +38,23 @@ class CountingLM:
         resp = self._responses[self.call_count % len(self._responses)]
         self.call_count += 1
         return resp
+
+
+class SamplingLM:
+    """Returns canned sample batches, then optional complete responses."""
+    def __init__(self, samples: list[str], complete_response: str = "final"):
+        self.samples = samples
+        self.complete_response = complete_response
+        self.sample_calls = 0
+        self.complete_calls = 0
+
+    def complete(self, prompt: str) -> str:
+        self.complete_calls += 1
+        return self.complete_response
+
+    def sample(self, prompt: str, n: int) -> list[str]:
+        self.sample_calls += 1
+        return self.samples[:n]
 
 
 def make_linear_graph():
@@ -390,6 +406,45 @@ class TestEscalation:
         executor.execute("q")
         # k_samples responses + 1 escalation call
         assert lm.call_count >= cfg.k_samples + 1
+
+    def test_majority_aggregation_returns_modal_sample(self):
+        """Self-consistency can return the modal normalized answer."""
+        g, _ = make_linear_graph()
+        lm = SamplingLM(["#### 7", "#### 42", "The answer is 42."])
+        cfg = ExecutorConfig(
+            escalation_enabled=True,
+            k_samples=3,
+            escalation_threshold=1.0,
+            sample_aggregation="majority",
+        )
+        executor = PPGExecutor(g, RandomSelector(0), lm, FeatureExtractor(), cfg)
+
+        trace = executor.execute("q")
+
+        assert trace.lm_response == "#### 42"
+        assert trace.escalated is False
+        assert lm.sample_calls == 1
+        assert lm.complete_calls == 0
+
+    def test_builtin_escalation_template_works_without_graph_node(self):
+        """Production fallback escalation does not require a special graph node."""
+        g, _ = make_linear_graph()
+        lm = SamplingLM(["#### 7", "#### 41", "#### 42"], complete_response="#### 42")
+        cfg = ExecutorConfig(
+            escalation_enabled=True,
+            k_samples=3,
+            escalation_threshold=0.0,
+            sample_aggregation="majority",
+            escalation_template="Candidates:\n{candidate_answers}\nChoose final.",
+        )
+        executor = PPGExecutor(g, RandomSelector(0), lm, FeatureExtractor(), cfg)
+
+        trace = executor.execute("q")
+
+        assert trace.escalated is True
+        assert trace.lm_response == "#### 42"
+        assert "Candidates:" in trace.assembled_prompt
+        assert "1. #### 7" in trace.assembled_prompt
 
     def test_no_escalation_node_no_crash(self):
         """If graph has no UNCERTAINTY_ESCALATION node, escalation is skipped."""

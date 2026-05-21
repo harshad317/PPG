@@ -46,7 +46,6 @@ import numpy as np
 from ppg.core.executor import (
     HighestUtilitySelector,
     LMClient,
-    PathTrace,
     PPGExecutor,
     PromptAssembler,
     RandomSelector,
@@ -436,8 +435,8 @@ class EvalHarness:
             from rich import box
         except ImportError:
             print(f"\n  {name}")
-            print(f"  | Split        | Score | StdDev  | AvgTok  | API calls |")
-            print(f"  |--------------|-------|---------|---------|-----------|")
+            print("  | Split        | Score | StdDev  | AvgTok  | API calls |")
+            print("  |--------------|-------|---------|---------|-----------|")
             for split_name, m in splits.items():
                 print(f"  | {split_name:<12} | {m.task_accuracy:.3f} | {m.std_task:.3f}   "
                       f"| {m.mean_tokens:>7.1f} | {m.lm_calls:>9} |")
@@ -578,9 +577,16 @@ class EvalHarness:
 
     def _run_ppg(self, examples: list[EvalExample]) -> BaselineMetrics:
         if self._cfg.ppg_path is not None:
-            runner = _StaticBestRunner(self._executor.graph, self._lm, self._cfg.ppg_path)
+            if self._executor is None:
+                raise ValueError("PPG evaluation requires an executor")
+            path = self._cfg.ppg_path
+
+            def _call_fixed(ex: EvalExample) -> tuple[str, int]:
+                trace = self._executor.execute_path(ex.x, path)
+                return trace.lm_response, trace.token_count
+
             scores, tokens, cscores = self._run_examples(
-                examples, runner.run, desc="eval ppg      "
+                examples, _call_fixed, desc="eval ppg      "
             )
             return BaselineMetrics(
                 name="ppg",

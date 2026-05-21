@@ -140,7 +140,7 @@ flowchart TD
 
 ### Feature Vector
 
-`RuntimeFeatures.as_vector()` exposes a fixed 14-dimensional feature schema:
+`RuntimeFeatures.as_vector()` exposes a fixed 21-dimensional feature schema:
 
 | Feature family | Fields |
 | --- | --- |
@@ -148,6 +148,8 @@ flowchart TD
 | Post-LM uncertainty | `sc_disagreement`, `entropy_approx` |
 | Verifier/tool state | `verifier_score`, `tool_success`, `tool_failure` |
 | Constraint signals | `has_length_constraint`, `has_format_constraint`, `has_keyword_constraint`, `n_constraints_norm` |
+| Math/reasoning signals | `has_numeric_input`, `n_arithmetic_ops_norm`, `n_steps_heuristic_norm`, `input_word_count_norm` |
+| Domain signals | `is_multiple_choice`, `is_code_task`, `has_adversarial_framing` |
 | Input cluster | `embed_cluster_0` through `embed_cluster_3` |
 
 Hash-based clusters are used by default. `FeatureExtractor.production()` lazily
@@ -284,6 +286,7 @@ Useful flags:
 | `--ppg-calibration dynamic` | Uses greedy learned routing per test input |
 | `--ppg-path-candidates N` | Limits validation path search to the top `N` utility-ranked paths |
 | `--production` | Enables production configs: self-consistency escalation, semantic clusters, Pareto reward, GRPO, reflection, evolution, branching |
+| `--sample-temperature T`, `--k-samples N` | Control stochastic self-consistency samples used by production escalation/majority voting |
 | `--no-reflection`, `--no-evolution`, `--no-branching`, `--no-pareto` | Disable individual production features |
 | `--workers N` | Runs episode collection and evaluation LM calls with thread workers |
 | `--run-mipro`, `--run-gepa` | Runs external prompt optimizer baselines |
@@ -389,7 +392,7 @@ Production mode in the runner wires together these optional components:
 
 | Component | Implementation | Purpose |
 | --- | --- | --- |
-| Self-consistency escalation | `ExecutorConfig.production()` | Samples multiple responses and adds an uncertainty fragment when disagreement is high |
+| Self-consistency majority/escalation | `ExecutorConfig.production()` | Samples multiple responses, majority-votes normalized answers, and escalates when disagreement is high |
 | Semantic clusters | `FeatureExtractor.production()` | Uses sentence-transformer embeddings when available |
 | GRPO-style updates | `TrainerConfig.k_grpo_paths > 1` | Updates paths with group-relative advantages |
 | Pareto reward | `ParetoRewardComputer` | Avoids fixed scalar weights by ranking objective vectors |

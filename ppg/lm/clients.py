@@ -22,8 +22,7 @@ import hashlib
 import json
 import os
 import threading
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -33,22 +32,24 @@ from typing import Optional
 
 @dataclass
 class OpenAIConfig:
-    model:       str   = "gpt-4o-mini"
-    temperature: float = 0.0
-    max_tokens:  int   = 512
-    timeout:     float = 30.0
-    max_retries: int   = 3
-    system_msg:  str   = "You are a helpful assistant."
+    model:              str             = "gpt-4o-mini"
+    temperature:        float           = 0.0
+    max_tokens:         int             = 512
+    timeout:            float           = 30.0
+    max_retries:        int             = 3
+    system_msg:         str             = "You are a helpful assistant."
+    sample_temperature: Optional[float] = None
 
 
 @dataclass
 class AnthropicConfig:
-    model:       str   = "claude-haiku-4-5-20251001"
-    temperature: float = 0.0
-    max_tokens:  int   = 512
-    timeout:     float = 30.0
-    max_retries: int   = 3
-    system_msg:  str   = "You are a helpful assistant."
+    model:              str             = "claude-haiku-4-5-20251001"
+    temperature:        float           = 0.0
+    max_tokens:         int             = 512
+    timeout:            float           = 30.0
+    max_retries:        int             = 3
+    system_msg:         str             = "You are a helpful assistant."
+    sample_temperature: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +97,26 @@ class OpenAIClient:
         )
         return response.choices[0].message.content or ""
 
+    def sample(self, prompt: str, n: int) -> list[str]:
+        """Return n independent completions for self-consistency decoding."""
+        if n <= 1:
+            return [self.complete(prompt)]
+        response = self._client.chat.completions.create(
+            model=self.cfg.model,
+            temperature=(
+                self.cfg.sample_temperature
+                if self.cfg.sample_temperature is not None
+                else self.cfg.temperature
+            ),
+            max_tokens=self.cfg.max_tokens,
+            n=n,
+            messages=[
+                {"role": "system", "content": self.cfg.system_msg},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return [choice.message.content or "" for choice in response.choices]
+
 
 # ---------------------------------------------------------------------------
 # AnthropicClient
@@ -140,6 +161,27 @@ class AnthropicClient:
         )
         return message.content[0].text if message.content else ""
 
+    def sample(self, prompt: str, n: int) -> list[str]:
+        """Return n completions for self-consistency decoding."""
+        if n <= 1:
+            return [self.complete(prompt)]
+        temperature = (
+            self.cfg.sample_temperature
+            if self.cfg.sample_temperature is not None
+            else self.cfg.temperature
+        )
+        samples = []
+        for _ in range(n):
+            message = self._client.messages.create(
+                model=self.cfg.model,
+                temperature=temperature,
+                max_tokens=self.cfg.max_tokens,
+                system=self.cfg.system_msg,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            samples.append(message.content[0].text if message.content else "")
+        return samples
+
 
 # ---------------------------------------------------------------------------
 # DiskCachedLMClient
@@ -162,6 +204,17 @@ class CountingLMClient:
         with self._lock:
             self._count += 1
         return self._lm.complete(prompt)
+
+    def sample(self, prompt: str, n: int) -> list[str]:
+        """Count sampled completions by generated completion, not request."""
+        if n <= 1:
+            return [self.complete(prompt)]
+        with self._lock:
+            self._count += n
+        sampler = getattr(self._lm, "sample", None)
+        if callable(sampler):
+            return list(sampler(prompt, n))
+        return [self._lm.complete(prompt) for _ in range(n)]
 
     @property
     def call_count(self) -> int:
@@ -229,6 +282,53 @@ class DiskCachedLMClient:
                 self._n_hits += 1  # concurrent hit
 
         return response
+
+    def sample(self, prompt: str, n: int) -> list[str]:
+        """
+        Cache self-consistency samples separately from deterministic complete().
+
+        Each sample index gets its own cache key. This preserves reproducible
+        replay while avoiding the prompt-only cache collapse where k samples all
+        become the first cached completion.
+        """
+        if n <= 1:
+            return [self.complete(prompt)]
+
+        self._ensure_loaded()
+        keys = [self._hash(f"{prompt}\0sample:{i}") for i in range(n)]
+        samples: list[Optional[str]] = [None] * n
+        missing: list[int] = []
+
+        with self._lock:
+            for i, key in enumerate(keys):
+                if key in self._cache:
+                    self._n_hits += 1
+                    samples[i] = self._cache[key]
+                else:
+                    missing.append(i)
+
+        if missing:
+            sampler = getattr(self._lm, "sample", None)
+            if callable(sampler):
+                fresh = list(sampler(prompt, len(missing)))
+            else:
+                fresh = [self._lm.complete(prompt) for _ in missing]
+
+            if len(fresh) < len(missing):
+                fresh.extend(self._lm.complete(prompt) for _ in range(len(missing) - len(fresh)))
+
+            with self._lock:
+                for i, response in zip(missing, fresh):
+                    key = keys[i]
+                    if key not in self._cache:
+                        self._cache[key] = response
+                        self._n_misses += 1
+                    else:
+                        self._n_hits += 1
+                    samples[i] = self._cache[key]
+                self._flush()
+
+        return [sample or "" for sample in samples]
 
     # ------------------------------------------------------------------
     # Diagnostics

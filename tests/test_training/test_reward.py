@@ -26,7 +26,6 @@ from ppg.training import (
     TruncationPerturbator,
     WordShufflePerturbator,
     CompositePerturbator,
-    default_perturbator,
     METRIC_REGISTRY,
 )
 
@@ -116,6 +115,15 @@ class TestNumericExactMatchMetric:
 
     def test_last_number_wins(self):
         assert self.m.score("Step 1: 10, Step 2: 42", "42") == 1.0
+
+    def test_handles_commas(self):
+        assert self.m.score("#### 1,234", "1234") == 1.0
+
+    def test_handles_fraction_decimal_equivalence(self):
+        assert self.m.score("Final answer: 1/2", "0.5") == 1.0
+
+    def test_handles_boxed_answer(self):
+        assert self.m.score(r"The result is \boxed{42}.", "42") == 1.0
 
 
 class TestF1Metric:

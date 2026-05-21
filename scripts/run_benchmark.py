@@ -46,7 +46,6 @@ import argparse
 import json
 import os
 import random
-import sys
 import time
 from pathlib import Path
 
@@ -93,11 +92,6 @@ def load_splits(
         HotpotQALoader, IFBenchLoader, LiveBenchMathLoader,
         MBPPLoader, MMLULoader, TruthfulQALoader,
     )
-    from ppg.eval.harness import EvalExample
-    from ppg.training.reward import (
-        ExactMatchMetric, F1Metric, NumericExactMatchMetric,
-    )
-
     rng = random.Random(seed)
 
     def _split_single(examples, n_tr, n_v, n_te):
@@ -320,13 +314,30 @@ class _DSPyCounter:
 # LM client factory
 # ---------------------------------------------------------------------------
 
-def make_lm(provider: str, model: str, cache_dir: str | None):
+def make_lm(
+    provider: str,
+    model: str,
+    cache_dir: str | None,
+    *,
+    temperature: float = 0.0,
+    sample_temperature: float | None = None,
+):
     if provider == "openai":
-        from ppg.lm.clients import OpenAIClient, OpenAIConfig, DiskCachedLMClient
-        lm = OpenAIClient(OpenAIConfig(model=model, temperature=0.0, max_tokens=2048))
+        from ppg.lm.clients import OpenAIClient, OpenAIConfig
+        lm = OpenAIClient(OpenAIConfig(
+            model=model,
+            temperature=temperature,
+            sample_temperature=sample_temperature,
+            max_tokens=2048,
+        ))
     elif provider == "anthropic":
-        from ppg.lm.clients import AnthropicClient, AnthropicConfig, DiskCachedLMClient
-        lm = AnthropicClient(AnthropicConfig(model=model, temperature=0.0, max_tokens=2048))
+        from ppg.lm.clients import AnthropicClient, AnthropicConfig
+        lm = AnthropicClient(AnthropicConfig(
+            model=model,
+            temperature=temperature,
+            sample_temperature=sample_temperature,
+            max_tokens=2048,
+        ))
     else:
         raise ValueError(f"Unknown provider: {provider!r}")
 
@@ -355,6 +366,14 @@ def main():
                         help="LM provider (default: openai)")
     parser.add_argument("--model", default="gpt-4o-mini",
                         help="Task LM model name (default: gpt-4o-mini)")
+    parser.add_argument("--temperature", type=float, default=0.0,
+                        help="Temperature for single-completion calls (default: 0.0)")
+    parser.add_argument("--sample-temperature", type=float, default=None,
+                        dest="sample_temperature",
+                        help="Temperature for self-consistency samples "
+                             "(default: same as --temperature)")
+    parser.add_argument("--k-samples", type=int, default=None, dest="k_samples",
+                        help="Override production self-consistency sample count")
     parser.add_argument("--reflection-model", default="gpt-4o",
                         dest="reflection_model",
                         help="GEPA reflection LM — more capable model recommended (default: gpt-4o)")
@@ -442,7 +461,6 @@ def main():
 
     try:
         from rich.console import Console as _Console
-        from rich.rule import Rule as _Rule
         _console = _Console()
         def _header(text: str) -> None:
             _console.rule(f"[bold]{text}[/bold]")
@@ -483,7 +501,13 @@ def main():
     # ------------------------------------------------------------------
     _step_rule(2, 6, "Building LM client...")
     from ppg.lm.clients import CountingLMClient
-    lm = CountingLMClient(make_lm(args.provider, args.model, cache_dir))
+    lm = CountingLMClient(make_lm(
+        args.provider,
+        args.model,
+        cache_dir,
+        temperature=args.temperature,
+        sample_temperature=args.sample_temperature,
+    ))
 
     # ------------------------------------------------------------------
     # 3. Build graph (needed by all methods for seed prompt)
@@ -516,7 +540,7 @@ def main():
     else:
         ppg_logger = NullLogger()
 
-    all_metrics:       dict[str, "BaselineMetrics"] = {}
+    all_metrics:       dict[str, object] = {}
     optimized_prompts: dict[str, str]               = {}
     _splits = {"train": train_ex, "val": val_ex, "test": test_ex}
     train_time = 0.0
@@ -537,6 +561,9 @@ def main():
 
         feat_extractor = FeatureExtractor.production() if use_prod else FeatureExtractor()
         exec_config    = ExecutorConfig.production() if use_prod else ExecutorConfig(escalation_enabled=False)
+        if args.k_samples is not None:
+            exec_config.k_samples = max(1, args.k_samples)
+            exec_config.escalation_enabled = exec_config.k_samples > 1
         executor  = PPGExecutor(
             graph=graph,
             selector=policy,
@@ -607,7 +634,13 @@ def main():
             refl_lm = lm
             if args.ppg_reflection_model:
                 from ppg.lm.clients import CountingLMClient
-                refl_lm = CountingLMClient(make_lm(args.provider, args.ppg_reflection_model, cache_dir))
+                refl_lm = CountingLMClient(make_lm(
+                    args.provider,
+                    args.ppg_reflection_model,
+                    cache_dir,
+                    temperature=args.temperature,
+                    sample_temperature=args.sample_temperature,
+                ))
 
             if not args.no_reflection:
                 from ppg.training.reflection import ReflectionLoop, ReflectionConfig
@@ -758,7 +791,7 @@ def main():
             _info("PPG will use greedy bandit routing per input at eval time")
 
         # --- Evaluate PPG + internal baselines ---
-        from ppg.eval.harness import EvalConfig, EvalHarness, EvalReport
+        from ppg.eval.harness import EvalConfig, EvalHarness
 
         internal_baselines = ["base_model", "flat_all", "static_best", "random_gating", "highest_utility"]
         harness = EvalHarness(
@@ -933,7 +966,6 @@ def main():
         from rich.console import Console
         from rich.table import Table
         from rich import box
-        from rich.panel import Panel
 
         rtable = Table(
             title=f"[bold]Results — {bench}  |  {args.model}[/bold]",

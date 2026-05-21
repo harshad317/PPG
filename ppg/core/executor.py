@@ -17,8 +17,10 @@ decisions, features, token count, response, reward (filled later).
 
 from __future__ import annotations
 
+import collections
 import dataclasses
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass
 from typing import Optional, Protocol, runtime_checkable
 
 import numpy as np
@@ -209,6 +211,8 @@ class ExecutorConfig:
     max_path_length:      int   = 10      # safety cap to prevent runaway paths
     prompt_separator:     str   = "\n\n"
     structured_prompts:   bool  = False   # add markdown section headers per fragment type
+    sample_aggregation:   str   = "first" # "first" or "majority" over normalized answers
+    escalation_template:  str   = ""      # fallback escalation text when graph has no node
 
     @classmethod
     def production(cls) -> "ExecutorConfig":
@@ -222,6 +226,12 @@ class ExecutorConfig:
             k_samples=3,
             escalation_threshold=0.3,
             structured_prompts=True,
+            sample_aggregation="majority",
+            escalation_template=(
+                "The sampled answers disagreed:\n{candidate_answers}\n\n"
+                "Re-solve the task carefully, check the most likely failure point, "
+                "and provide one final answer in the requested format."
+            ),
         )
 
 
@@ -288,26 +298,78 @@ class PPGExecutor:
         node_ids, edges, guard_decisions = self._walk(phi_vec, train_mode)
 
         # Stage 3: assemble prompt
+        return self._complete_trace(
+            x=x,
+            ctx=ctx,
+            node_ids=node_ids,
+            edges=edges,
+            guard_decisions=guard_decisions,
+            pre_phi=pre_phi,
+        )
+
+    def execute_path(
+        self,
+        x:          str,
+        node_ids:   list[str],
+        context:    Optional[dict] = None,
+    ) -> PathTrace:
+        """
+        Run one episode through a fixed path, while preserving the same LM
+        sampling, aggregation, token counting, and escalation behavior used by
+        dynamic PPG execution.
+        """
+        missing = [nid for nid in node_ids if nid not in self.graph.nodes]
+        if missing:
+            raise ValueError(f"fixed path contains unknown node ids: {missing}")
+
+        ctx = context if context is not None else {"input": x}
+        pre_phi = self.fx.pre_lm(x)
+        edges = list(zip(node_ids, node_ids[1:]))
+
+        return self._complete_trace(
+            x=x,
+            ctx=ctx,
+            node_ids=list(node_ids),
+            edges=edges,
+            guard_decisions=[],
+            pre_phi=pre_phi,
+        )
+
+    def _complete_trace(
+        self,
+        *,
+        x:               str,
+        ctx:             dict,
+        node_ids:        list[str],
+        edges:           list[tuple[str, str]],
+        guard_decisions: list[GuardDecision],
+        pre_phi:         RuntimeFeatures,
+    ) -> PathTrace:
+        """Assemble a selected path, call the LM, and optionally escalate."""
         prompt = self.assembler.assemble(node_ids, ctx)
         token_count = self._count_tokens(prompt)
 
-        # Stage 4: primary LM call (PPG-fast)
-        response = self.lm.complete(prompt)
+        n_samples = self.cfg.k_samples if self.cfg.escalation_enabled and self.cfg.k_samples > 1 else 1
+        samples = self._complete_many(prompt, n_samples)
+        response = self._select_response(samples)
 
-        # Stage 5: optional escalation
         post_phi: Optional[RuntimeFeatures] = None
         escalated = False
 
         if self.cfg.escalation_enabled and self.cfg.k_samples > 1:
-            extra_samples = [self.lm.complete(prompt)
-                             for _ in range(self.cfg.k_samples - 1)]
-            all_samples = [response] + extra_samples
-            post_phi = self.fx.post_lm(x, all_samples)
+            post_phi = self.fx.post_lm(x, samples)
 
             if post_phi.sc_disagreement > self.cfg.escalation_threshold:
                 node_ids, edges, prompt, response, token_count, escalated = (
-                    self._escalate(node_ids, edges, ctx, post_phi,
-                                   original_response=response)
+                    self._escalate(
+                        node_ids,
+                        edges,
+                        ctx,
+                        post_phi,
+                        original_response=response,
+                        samples=samples,
+                        original_prompt=prompt,
+                    )
                 )
 
         return PathTrace(
@@ -398,16 +460,29 @@ class PPGExecutor:
         ctx:               dict,
         post_phi:          RuntimeFeatures,
         original_response: str = "",
+        samples:           Optional[list[str]] = None,
+        original_prompt:   str = "",
     ) -> tuple[list[str], list[tuple[str, str]], str, str, int, bool]:
         """
         Extend path with an UNCERTAINTY_ESCALATION node (if one exists in graph)
         and call LM again. Returns updated (node_ids, edges, prompt, response,
         token_count, escalated).
         """
+        ctx = self._with_candidate_answers(ctx, samples or [original_response])
         esc_nodes = self.graph.nodes_by_type(FragmentType.UNCERTAINTY_ESCALATION)
         if not esc_nodes:
-            # No escalation node in graph; return unchanged without extra LM call
-            prompt = self.assembler.assemble(node_ids, ctx)
+            if self.cfg.escalation_template.strip():
+                base_prompt = original_prompt or self.assembler.assemble(node_ids, ctx)
+                rendered = self.cfg.escalation_template.format_map(
+                    collections.defaultdict(str, ctx)
+                )
+                prompt = self.cfg.prompt_separator.join(
+                    p for p in (base_prompt, rendered) if p.strip()
+                )
+                response = self.lm.complete(prompt)
+                return node_ids, edges, prompt, response, self._count_tokens(prompt), True
+
+            prompt = original_prompt or self.assembler.assemble(node_ids, ctx)
             return node_ids, edges, prompt, original_response, self._count_tokens(prompt), False
 
         # Pick first escalation node not already in path
@@ -428,6 +503,48 @@ class PPGExecutor:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _complete_many(self, prompt: str, n: int) -> list[str]:
+        """Return n completions, using LM-native sampling when available."""
+        if n <= 1:
+            return [self.lm.complete(prompt)]
+
+        sampler = getattr(self.lm, "sample", None)
+        if callable(sampler):
+            samples = list(sampler(prompt, n))
+            if len(samples) >= n:
+                return samples[:n]
+            if samples:
+                samples.extend(self.lm.complete(prompt) for _ in range(n - len(samples)))
+                return samples
+
+        return [self.lm.complete(prompt) for _ in range(n)]
+
+    def _select_response(self, samples: list[str]) -> str:
+        """Pick the response returned to callers from one or more samples."""
+        if not samples:
+            return ""
+        if self.cfg.sample_aggregation != "majority" or len(samples) == 1:
+            return samples[0]
+
+        normalizer = getattr(self.fx, "normalizer", None)
+        if normalizer is None:
+            return samples[0]
+
+        normalized = [normalizer(sample) for sample in samples]
+        counts = Counter(normalized)
+        best_answer, _ = counts.most_common(1)[0]
+        for answer, sample in zip(normalized, samples):
+            if answer == best_answer:
+                return sample
+        return samples[0]
+
+    @staticmethod
+    def _with_candidate_answers(ctx: dict, samples: list[str]) -> dict:
+        candidate_answers = "\n".join(
+            f"{i + 1}. {sample.strip()}" for i, sample in enumerate(samples)
+        )
+        return {**ctx, "candidate_answers": candidate_answers}
 
     def _count_tokens(self, text: str) -> int:
         from ppg.core.tokenizer import count_tokens

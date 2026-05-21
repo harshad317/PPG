@@ -21,7 +21,8 @@ from __future__ import annotations
 import re
 import string
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from fractions import Fraction
 from typing import Optional, Protocol, runtime_checkable
 
 import numpy as np
@@ -46,9 +47,40 @@ def _normalize(text: str) -> str:
 
 
 def _extract_number(text: str) -> str:
-    """Return last number found in text, or full normalised text if none."""
-    nums = re.findall(r"-?\d+(?:\.\d+)?", text)
-    return nums[-1] if nums else _normalize(text)
+    """Return last numeric answer as a canonical string, or normalised text."""
+    value = _extract_numeric_value(text)
+    return str(value) if value is not None else _normalize(text)
+
+
+def _extract_numeric_value(text: str) -> Fraction | None:
+    """Best-effort numeric answer extraction for math benchmarks."""
+    text = text.lower().replace(",", "").replace("−", "-")
+
+    boxed = re.findall(r"\\boxed\{([^{}]+)\}", text)
+    if boxed:
+        boxed_value = _extract_numeric_value(boxed[-1])
+        if boxed_value is not None:
+            return boxed_value
+
+    # Prefer explicit final-answer spans when present.
+    spans = re.findall(
+        r"(?:####|final answer(?: is|:)?|answer(?: is|:)?)\s*([^\n]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    search_text = spans[-1] if spans else text
+
+    candidates = re.findall(r"-?\d+\s*/\s*-?\d+|-?\d+(?:\.\d+)?", search_text)
+    if not candidates and spans:
+        candidates = re.findall(r"-?\d+\s*/\s*-?\d+|-?\d+(?:\.\d+)?", text)
+    if not candidates:
+        return None
+
+    raw = candidates[-1].replace(" ", "")
+    try:
+        return Fraction(raw)
+    except (ValueError, ZeroDivisionError):
+        return None
 
 
 class ExactMatchMetric:

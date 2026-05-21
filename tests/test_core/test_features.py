@@ -12,7 +12,7 @@ from ppg.core import (
     default_normalizer,
     verbatim_normalizer,
 )
-from ppg.core.features import _consistency_features, _HashCluster
+from ppg.core.features import _consistency_features
 
 
 # ---------------------------------------------------------------------------
@@ -31,6 +31,12 @@ class TestDefaultNormalizer:
 
     def test_last_number_wins(self):
         assert default_normalizer("Step 1 gives 3, step 2 gives 7.") == "7"
+
+    def test_fraction_matches_decimal_form(self):
+        assert default_normalizer("Final answer: 1/2") == "0.5"
+
+    def test_commas_are_removed_from_numbers(self):
+        assert default_normalizer("#### 1,234") == "1234"
 
     def test_fallback_strips_punctuation(self):
         result = default_normalizer("Yes!")
@@ -149,6 +155,9 @@ class TestRuntimeFeatures:
             verifier_score=0.9,
             tool_success=1.0,
             tool_failure=0.0,
+            has_format_constraint=1.0,
+            has_numeric_input=1.0,
+            is_multiple_choice=1.0,
             embed_cluster=2,
         )
         f2 = RuntimeFeatures.from_dict(f.to_dict())

@@ -16,6 +16,7 @@ import re
 import threading
 from collections import Counter
 from dataclasses import dataclass, field
+from fractions import Fraction
 from typing import Callable, Optional, Protocol
 
 import numpy as np
@@ -203,6 +204,17 @@ class RuntimeFeatures:
             "verifier_score":    self.verifier_score,
             "tool_success":      self.tool_success,
             "tool_failure":      self.tool_failure,
+            "has_length_constraint": self.has_length_constraint,
+            "has_format_constraint": self.has_format_constraint,
+            "has_keyword_constraint": self.has_keyword_constraint,
+            "n_constraints_norm": self.n_constraints_norm,
+            "has_numeric_input": self.has_numeric_input,
+            "n_arithmetic_ops_norm": self.n_arithmetic_ops_norm,
+            "n_steps_heuristic_norm": self.n_steps_heuristic_norm,
+            "input_word_count_norm": self.input_word_count_norm,
+            "is_multiple_choice": self.is_multiple_choice,
+            "is_code_task": self.is_code_task,
+            "has_adversarial_framing": self.has_adversarial_framing,
             "embed_cluster":     self.embed_cluster,
         }
 
@@ -225,12 +237,40 @@ def default_normalizer(text: str) -> str:
     Priority: extract last number > strip punctuation/case.
     """
     text = text.strip().lower()
-    # extract last standalone number (handles "The answer is 42.")
-    nums = re.findall(r"-?\d+(?:\.\d+)?", text)
-    if nums:
-        return nums[-1]
+    numeric = _extract_numeric_answer(text)
+    if numeric is not None:
+        return numeric
     # fallback: strip non-alphanumeric boundaries
     return re.sub(r"[^a-z0-9\s]", "", text).strip()
+
+
+def _extract_numeric_answer(text: str) -> str | None:
+    """Canonicalize common final-answer forms for self-consistency voting."""
+    text = text.replace(",", "").replace("−", "-")
+    boxed = re.findall(r"\\boxed\{([^{}]+)\}", text)
+    if boxed:
+        boxed_value = _extract_numeric_answer(boxed[-1])
+        if boxed_value is not None:
+            return boxed_value
+
+    spans = re.findall(
+        r"(?:####|final answer(?: is|:)?|answer(?: is|:)?)\s*([^\n]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    search_text = spans[-1] if spans else text
+    nums = re.findall(r"-?\d+\s*/\s*-?\d+|-?\d+(?:\.\d+)?", search_text)
+    if not nums and spans:
+        nums = re.findall(r"-?\d+\s*/\s*-?\d+|-?\d+(?:\.\d+)?", text)
+    if not nums:
+        return None
+    try:
+        value = Fraction(nums[-1].replace(" ", ""))
+        if value.denominator == 1:
+            return str(value.numerator)
+        return f"{float(value):.12g}"
+    except (ValueError, ZeroDivisionError):
+        return None
 
 
 def verbatim_normalizer(text: str) -> str:

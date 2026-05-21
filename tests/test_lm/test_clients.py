@@ -13,6 +13,7 @@ import pytest
 from ppg.lm.clients import (
     AnthropicClient,
     AnthropicConfig,
+    CountingLMClient,
     DiskCachedLMClient,
     OpenAIClient,
     OpenAIConfig,
@@ -31,6 +32,21 @@ class FixedLM:
     def complete(self, prompt: str) -> str:
         self.n_calls += 1
         return self.response
+
+
+class SamplingLM:
+    def __init__(self, responses: list[str]):
+        self.responses = responses
+        self.n_sample_calls = 0
+        self.n_complete_calls = 0
+
+    def complete(self, prompt: str) -> str:
+        self.n_complete_calls += 1
+        return self.responses[0]
+
+    def sample(self, prompt: str, n: int) -> list[str]:
+        self.n_sample_calls += 1
+        return self.responses[:n]
 
 
 def cache_path_in(d: str) -> str:
@@ -84,6 +100,19 @@ def _make_openai_mock_response(text: str):
     choice.message = msg
     resp = MagicMock()
     resp.choices = [choice]
+    return resp
+
+
+def _make_openai_mock_choices(texts: list[str]):
+    choices = []
+    for text in texts:
+        msg = MagicMock()
+        msg.content = text
+        choice = MagicMock()
+        choice.message = msg
+        choices.append(choice)
+    resp = MagicMock()
+    resp.choices = choices
     return resp
 
 
@@ -155,6 +184,22 @@ class TestOpenAIClient:
             OpenAIClient(config=cfg, api_key="k")
         init_kwargs = mock_openai.OpenAI.call_args.kwargs
         assert init_kwargs["max_retries"] == 5
+
+    def test_sample_requests_n_choices_with_sample_temperature(self):
+        mock_openai = MagicMock()
+        mock_client = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+        mock_client.chat.completions.create.return_value = (
+            _make_openai_mock_choices(["a", "b", "c"])
+        )
+        cfg = OpenAIConfig(temperature=0.0, sample_temperature=0.7)
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            client = OpenAIClient(config=cfg, api_key="k")
+            samples = client.sample("prompt", 3)
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["n"] == 3
+        assert call_kwargs["temperature"] == pytest.approx(0.7)
+        assert samples == ["a", "b", "c"]
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +283,25 @@ class TestAnthropicClient:
         init_kwargs = mock_anthropic.Anthropic.call_args.kwargs
         assert init_kwargs["max_retries"] == 7
 
+    def test_sample_uses_sample_temperature(self):
+        mock_anthropic = MagicMock()
+        mock_client = MagicMock()
+        mock_anthropic.Anthropic.return_value = mock_client
+        mock_client.messages.create.side_effect = [
+            _make_anthropic_mock_response("a"),
+            _make_anthropic_mock_response("b"),
+        ]
+        cfg = AnthropicConfig(temperature=0.0, sample_temperature=0.8)
+        with patch.dict("sys.modules", {"anthropic": mock_anthropic}):
+            client = AnthropicClient(config=cfg, api_key="k")
+            samples = client.sample("prompt", 2)
+        assert samples == ["a", "b"]
+        temperatures = [
+            call.kwargs["temperature"]
+            for call in mock_client.messages.create.call_args_list
+        ]
+        assert temperatures == [pytest.approx(0.8), pytest.approx(0.8)]
+
 
 # ---------------------------------------------------------------------------
 # DiskCachedLMClient
@@ -283,6 +347,28 @@ class TestDiskCachedLMClientBasic:
             wrapped.response = "second"
             result = cached.complete("q")
             assert result == "first"
+
+    def test_sample_uses_distinct_cache_entries(self):
+        with tempfile.TemporaryDirectory() as d:
+            wrapped = SamplingLM(["a", "b", "c"])
+            cached = DiskCachedLMClient(wrapped, cache_path_in(d))
+
+            first = cached.sample("q", 3)
+            second = cached.sample("q", 3)
+
+            assert first == ["a", "b", "c"]
+            assert second == ["a", "b", "c"]
+            assert wrapped.n_sample_calls == 1
+            assert cached.cache_size() == 3
+
+
+class TestCountingLMClient:
+    def test_sample_counts_generated_completions(self):
+        wrapped = SamplingLM(["a", "b", "c"])
+        counted = CountingLMClient(wrapped)
+
+        assert counted.sample("q", 3) == ["a", "b", "c"]
+        assert counted.call_count == 3
 
 
 class TestDiskCachedLMClientDiagnostics:

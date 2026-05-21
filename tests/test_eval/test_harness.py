@@ -48,6 +48,20 @@ class PromptAwareLM:
         return "42" if "good route" in prompt else "wrong"
 
 
+class SamplingLM:
+    def __init__(self):
+        self.sample_calls = 0
+        self.complete_calls = 0
+
+    def complete(self, prompt: str) -> str:
+        self.complete_calls += 1
+        return "42"
+
+    def sample(self, prompt: str, n: int) -> list[str]:
+        self.sample_calls += 1
+        return ["wrong", "42", "42"][:n]
+
+
 def make_graph():
     b = PPGraphBuilder()
     b.add_fragment(FragmentType.TASK_FRAMING,    "Task: {input}")
@@ -271,6 +285,35 @@ class TestEvalHarnessPPG:
         )
         report = harness.evaluate(make_examples(3, answer="42"))
         assert report.ppg.task_accuracy == pytest.approx(1.0)
+
+    def test_calibrated_ppg_path_keeps_executor_sampling(self):
+        graph, ids = make_graph()
+        lm = SamplingLM()
+        executor = PPGExecutor(
+            graph=graph,
+            selector=LinUCBPolicy(graph),
+            lm=lm,
+            feature_extractor=FeatureExtractor(),
+            config=ExecutorConfig(
+                escalation_enabled=True,
+                k_samples=3,
+                escalation_threshold=1.0,
+                sample_aggregation="majority",
+            ),
+        )
+        cfg = EvalConfig(baselines=[], ppg_path=ids)
+        harness = EvalHarness(
+            executor=executor,
+            metric=ExactMatchMetric(),
+            lm=lm,
+            config=cfg,
+        )
+
+        report = harness.evaluate(make_examples(2, answer="42"))
+
+        assert report.ppg.task_accuracy == pytest.approx(1.0)
+        assert lm.sample_calls == 2
+        assert lm.complete_calls == 0
 
 
 # ---------------------------------------------------------------------------
