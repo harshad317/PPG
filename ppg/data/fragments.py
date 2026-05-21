@@ -688,8 +688,6 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "The question requires reasoning across two or more passages.\n\n"
                 "{input}"
             ),
-            # Variant: minimal framing (reduces overhead for long contexts)
-            "{input}\n\nAnswer the question above using the provided context.",
         ],
         "domain_primer": [
             (
@@ -714,17 +712,6 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
             ),
             # Variant: minimal CoT
             "Think through which facts are needed and how they connect.",
-            # Variant: direct extraction (skip reasoning, find answer entity)
-            (
-                "Scan the passages for the answer. "
-                "Do not explain your reasoning. "
-                "Just extract the answer directly."
-            ),
-            # Variant: two-sentence chain (concise multi-hop)
-            (
-                "In one sentence, state the key linking fact. "
-                "In a second sentence, state the answer."
-            ),
         ],
         "compression": [
             "Reason briefly. Do not quote entire passages — extract only the relevant facts.",

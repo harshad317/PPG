@@ -93,7 +93,7 @@ def select_path_by_validation(
     n_workers: int = 1,
     show_progress: bool = False,
     early_stop_patience: int = 10,
-    token_efficiency_weight: float = 0.02,
+    token_efficiency_weight: float = 0.01,
     max_tokens_ref: int = 2048,
 ) -> PathSearchResult:
     """
