@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import statistics
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Optional
 
 from ppg.core.executor import LMClient, PromptAssembler
+from ppg.core.features import default_normalizer
 from ppg.core.graph import PPGraph
 from ppg.core.tokenizer import count_tokens
 from ppg.eval.harness import EvalExample
@@ -37,6 +39,13 @@ class PathSearchResult:
     n_paths_scored: int
     total_paths: int
     candidates: list[PathCandidate] = field(default_factory=list)
+    ensemble_val_score: Optional[float] = None
+
+
+@dataclass
+class _PathEvaluation:
+    candidate: PathCandidate
+    responses: list[str]
 
 
 def path_utility(graph: PPGraph, path: list[str]) -> float:
@@ -160,10 +169,11 @@ def select_path_by_validation(
 
     best: Optional[PathSearchResult] = None
     candidates: list[PathCandidate] = []
+    evaluations: list[_PathEvaluation] = []
     no_improve_count = 0
     n_scored = 0
     for path in iterator:
-        score, mean_tokens = score_path(
+        score, mean_tokens, responses = _score_path_detailed(
             graph=graph,
             path=path,
             examples=examples,
@@ -195,6 +205,10 @@ def select_path_by_validation(
             utility=candidate.utility,
             adjusted_score=adjusted,
         ))
+        evaluations.append(_PathEvaluation(
+            candidate=candidates[-1],
+            responses=responses,
+        ))
         if best is None or _is_better(candidate, best,
                                        token_efficiency_weight, max_tokens_ref,
                                        input_tokens):
@@ -212,18 +226,13 @@ def select_path_by_validation(
 
     assert best is not None
     best.n_paths_scored = n_scored
-    top_k = max(1, return_top_k)
-    best.candidates = sorted(
-        candidates,
-        key=lambda c: (
-            c.adjusted_score,
-            c.val_score,
-            c.utility,
-            -c.mean_tokens,
-            -len(c.path),
-        ),
-        reverse=True,
-    )[:top_k]
+    best.candidates, best.ensemble_val_score = _select_ensemble_candidates(
+        evaluations=evaluations,
+        examples=examples,
+        metric=metric,
+        constraint_checker=constraint_checker,
+        top_k=max(1, return_top_k),
+    )
     return best
 
 
@@ -238,12 +247,36 @@ def score_path(
     n_workers: int = 1,
 ) -> tuple[float, float]:
     """Return ``(mean_score, mean_prompt_tokens)`` for a fixed path."""
+    score, mean_tokens, _responses = _score_path_detailed(
+        graph=graph,
+        path=path,
+        examples=examples,
+        lm=lm,
+        metric=metric,
+        constraint_checker=constraint_checker,
+        n_workers=n_workers,
+    )
+    return score, mean_tokens
+
+
+def _score_path_detailed(
+    graph: PPGraph,
+    path: list[str],
+    examples: list[EvalExample],
+    lm: LMClient,
+    metric: TaskMetric,
+    constraint_checker: Optional[ConstraintChecker] = None,
+    *,
+    n_workers: int = 1,
+) -> tuple[float, float, list[str]]:
+    """Return score, mean prompt tokens, and per-example responses."""
     asm = PromptAssembler(graph)
 
-    def _run(ex: EvalExample) -> tuple[float, int]:
+    def _run(ex: EvalExample) -> tuple[float, int, str]:
         prompt = asm.assemble(path, {"input": ex.x})
         response = lm.complete(prompt)
-        return _score_response(response, ex, metric, constraint_checker), count_tokens(prompt)
+        score = _score_response(response, ex, metric, constraint_checker)
+        return score, count_tokens(prompt), response
 
     if n_workers <= 1:
         out = [_run(ex) for ex in examples]
@@ -251,9 +284,10 @@ def score_path(
         with ThreadPoolExecutor(max_workers=n_workers) as pool:
             out = list(pool.map(_run, examples))
 
-    scores = [s for s, _ in out]
-    tokens = [t for _, t in out]
-    return statistics.mean(scores), statistics.mean(tokens)
+    scores = [s for s, _, _ in out]
+    tokens = [t for _, t, _ in out]
+    responses = [r for _, _, r in out]
+    return statistics.mean(scores), statistics.mean(tokens), responses
 
 
 def _score_response(
@@ -300,3 +334,103 @@ def _adjusted_score(
 ) -> float:
     overhead = max(0.0, result.mean_tokens - input_tokens)
     return result.val_score - token_weight * (overhead / max_tokens_ref)
+
+
+def _candidate_sort_key(c: PathCandidate) -> tuple[float, float, float, float, int]:
+    return (
+        c.adjusted_score,
+        c.val_score,
+        c.utility,
+        -c.mean_tokens,
+        -len(c.path),
+    )
+
+
+def _select_ensemble_candidates(
+    evaluations: list[_PathEvaluation],
+    examples: list[EvalExample],
+    metric: TaskMetric,
+    constraint_checker: Optional[ConstraintChecker],
+    top_k: int,
+) -> tuple[list[PathCandidate], float]:
+    if not evaluations:
+        return [], 0.0
+
+    ranked = sorted(
+        evaluations,
+        key=lambda ev: _candidate_sort_key(ev.candidate),
+        reverse=True,
+    )
+    if top_k <= 1:
+        return [ranked[0].candidate], ranked[0].candidate.val_score
+
+    best_selected: list[_PathEvaluation] = []
+    best_key: tuple[float, float, float, float] | None = None
+
+    # Try several high-quality seeds. The best individual path is not always
+    # the best first voter because tie-breaking returns the first response.
+    for seed in ranked[:min(10, len(ranked))]:
+        selected = [seed]
+        remaining = [ev for ev in ranked if ev is not seed]
+
+        while remaining and len(selected) < top_k:
+            best_idx = 0
+            best_step_key: tuple[float, float, float, float, float, int] | None = None
+            for i, ev in enumerate(remaining):
+                score = _ensemble_score(
+                    selected + [ev],
+                    examples,
+                    metric,
+                    constraint_checker,
+                )
+                c = ev.candidate
+                key = (
+                    score,
+                    c.adjusted_score,
+                    c.val_score,
+                    c.utility,
+                    -c.mean_tokens,
+                    -len(c.path),
+                )
+                if best_step_key is None or key > best_step_key:
+                    best_step_key = key
+                    best_idx = i
+            selected.append(remaining.pop(best_idx))
+
+        score = _ensemble_score(selected, examples, metric, constraint_checker)
+        mean_adjusted = statistics.mean(ev.candidate.adjusted_score for ev in selected)
+        mean_val = statistics.mean(ev.candidate.val_score for ev in selected)
+        key = (score, mean_adjusted, mean_val, selected[0].candidate.adjusted_score)
+        if best_key is None or key > best_key:
+            best_key = key
+            best_selected = selected
+
+    return [ev.candidate for ev in best_selected], best_key[0] if best_key else 0.0
+
+
+def _ensemble_score(
+    evaluations: list[_PathEvaluation],
+    examples: list[EvalExample],
+    metric: TaskMetric,
+    constraint_checker: Optional[ConstraintChecker],
+) -> float:
+    if not evaluations:
+        return 0.0
+    scores = []
+    for i, ex in enumerate(examples):
+        responses = [ev.responses[i] for ev in evaluations]
+        response = _select_majority_response(responses)
+        scores.append(_score_response(response, ex, metric, constraint_checker))
+    return statistics.mean(scores) if scores else 0.0
+
+
+def _select_majority_response(responses: list[str]) -> str:
+    if not responses:
+        return ""
+    normalized = [default_normalizer(response) for response in responses]
+    counts = Counter(normalized)
+    best_answer, _count = counts.most_common(1)[0]
+    for answer, response in zip(normalized, responses):
+        if answer == best_answer:
+            return response
+    return responses[0]

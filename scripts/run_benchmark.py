@@ -422,6 +422,11 @@ def main():
                         dest="ppg_ensemble_paths",
                         help="Deploy a majority-vote ensemble of the top N "
                              "validation paths for PPG (default: 1)")
+    parser.add_argument("--ppg-calibration-patience", type=int, default=None,
+                        dest="ppg_calibration_patience",
+                        help="Early-stop patience for validation path search; "
+                             "0 disables early stopping. Default: 0 when explicit "
+                             "path candidates or path ensembles are requested, else 10.")
     parser.add_argument("--run-base",  action="store_true", dest="run_base",
                         help="Run base model eval only (raw input, no prompt engineering). Skips PPG unless --include-ppg.")
     parser.add_argument("--run-mipro", action="store_true", dest="run_mipro",
@@ -776,6 +781,12 @@ def main():
                 max_candidates = 20
             else:
                 max_candidates = None
+            if args.ppg_calibration_patience is not None:
+                early_stop_patience = args.ppg_calibration_patience
+            elif args.ppg_path_candidates > 0 or args.ppg_ensemble_paths > 1:
+                early_stop_patience = 0
+            else:
+                early_stop_patience = 10
             lm.reset()
             if hasattr(_lm_inner, 'reset_stats'):
                 _lm_inner.reset_stats()
@@ -789,6 +800,7 @@ def main():
                 max_candidates=max_candidates,
                 n_workers=args.workers,
                 show_progress=show_progress,
+                early_stop_patience=early_stop_patience,
                 return_top_k=max(1, args.ppg_ensemble_paths),
             )
             ppg_calibration_calls = lm.reset()
@@ -803,6 +815,11 @@ def main():
                 "mean_tokens":     round(selected.mean_tokens, 1),
                 "utility":         round(selected.utility, 4),
                 "ensemble_paths":  len(ppg_paths or []),
+                "ensemble_val_score": (
+                    round(selected.ensemble_val_score, 4)
+                    if selected.ensemble_val_score is not None else None
+                ),
+                "early_stop_patience": early_stop_patience,
                 "n_paths_scored":  selected.n_paths_scored,
                 "total_paths":     selected.total_paths,
                 "api_calls":       ppg_calibration_calls,
@@ -814,6 +831,7 @@ def main():
                 f"avg_tok={selected.mean_tokens:.1f}  "
                 f"paths={selected.n_paths_scored}/{selected.total_paths}  "
                 f"ensemble={len(ppg_paths or [])}  "
+                f"ensemble_val={(selected.ensemble_val_score or 0.0):.4f}  "
                 f"api_calls={ppg_calibration_calls}  "
                 f"real_calls={ppg_calibration_real_calls}"
             )
