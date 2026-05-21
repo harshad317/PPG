@@ -242,11 +242,11 @@ lm = DiskCachedLMClient(base_lm, cache_path=".cache/lm_cache.json")
 ## Benchmark Runner
 
 `scripts/run_benchmark.py` loads splits, trains PPG when requested, optionally
-calibrates a fixed validation path, evaluates internal baselines, and writes a
-JSON result file.
+calibrates a fixed validation path, evaluates PPG, and writes a JSON result
+file. Diagnostic internal baselines run only when explicitly requested.
 
 ```bash
-# PPG plus internal baselines on GSM8K
+# PPG only on GSM8K
 python scripts/run_benchmark.py gsm8k --model gpt-4o-mini
 
 # Production PPG with few-shot fragments and parallel workers
@@ -293,6 +293,7 @@ Useful flags:
 | `--no-reflection`, `--no-evolution`, `--no-branching`, `--no-pareto` | Disable individual production features |
 | `--workers N` | Runs episode collection and evaluation LM calls with thread workers |
 | `--run-mipro`, `--run-gepa` | Runs external prompt optimizer baselines |
+| `--run-internal-baselines` | Also runs diagnostic internal baselines after PPG |
 | `--include-ppg` | Includes PPG when running external baselines |
 | `--cache-dir DIR`, `--no-cache` | Controls disk caching for LM calls |
 | `--output-dir DIR` | Writes result JSON files to `DIR` |
@@ -439,8 +440,9 @@ Production mode in the runner wires together these optional components:
 
 ## Evaluation
 
-`EvalHarness` compares trained PPG against matched-budget baselines. The default
-internal baselines all use one LM call per example, matching `PPG-fast`.
+`EvalHarness` can compare trained PPG against matched-budget baselines. The
+internal baselines all use one LM call per example, matching `PPG-fast`, and
+are opt-in from `scripts/run_benchmark.py` via `--run-internal-baselines`.
 
 ```python
 from ppg.eval import EvalConfig, EvalExample, EvalHarness

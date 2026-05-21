@@ -3,13 +3,14 @@
 PPG benchmark runner.
 
 Each method runs independently. By default (no flags), trains PPG from scratch
-and evaluates it alongside internal baselines. Use --run-mipro or --run-gepa
-to run those methods standalone. Use --include-ppg to combine PPG with external
-methods in a single run.
+and evaluates only PPG. Use --run-mipro or --run-gepa to run external methods
+standalone. Use --include-ppg to combine PPG with external methods in a single
+run.
 
 Methods
 -------
-ppg (default)  : PPG + internal baselines (flat_all, static_best, random_gating, highest_utility)
+ppg (default)  : PPG only
+--run-internal-baselines : add flat_all/static_best/random_gating/highest_utility diagnostics
 --run-mipro    : MIPROv2 (DSPy, auto='heavy') — standalone, no PPG training
 --run-gepa     : GEPA (DSPy) — standalone, no PPG training
 --include-ppg  : Add PPG training + eval when using --run-mipro/--run-gepa
@@ -429,6 +430,10 @@ def main():
                              "path candidates or path ensembles are requested, else 10.")
     parser.add_argument("--run-base",  action="store_true", dest="run_base",
                         help="Run base model eval only (raw input, no prompt engineering). Skips PPG unless --include-ppg.")
+    parser.add_argument("--run-internal-baselines", action="store_true",
+                        dest="run_internal_baselines",
+                        help="Also evaluate diagnostic internal baselines after PPG "
+                             "(base_model, flat_all, static_best, random_gating, highest_utility)")
     parser.add_argument("--run-mipro", action="store_true", dest="run_mipro",
                         help="Run MIPROv2 only (requires dspy-ai). Skips PPG unless --include-ppg.")
     parser.add_argument("--run-gepa",  action="store_true", dest="run_gepa",
@@ -481,7 +486,7 @@ def main():
 
     # Determine which methods to run.
     # --run-gepa / --run-mipro without --include-ppg → external only, skip PPG.
-    # Default (no external flags) → PPG + internal baselines.
+    # Default (no external flags) → PPG only.
     has_external = args.run_mipro or args.run_gepa or args.run_base
     run_ppg = args.include_ppg or not has_external
 
@@ -576,7 +581,7 @@ def main():
     stats = None
 
     # ==================================================================
-    # PPG path: train → calibrate → eval + internal baselines
+    # PPG path: train → calibrate → eval
     # ==================================================================
     if run_ppg:
         from ppg.bandits.linucb import LinUCBPolicy
@@ -840,10 +845,13 @@ def main():
             ppg_calibration_info = {"mode": "dynamic", "api_calls": 0}
             _info("PPG will use greedy bandit routing per input at eval time")
 
-        # --- Evaluate PPG + internal baselines ---
+        # --- Evaluate PPG ---
         from ppg.eval.harness import EvalConfig, EvalHarness
 
-        internal_baselines = ["base_model", "flat_all", "static_best", "random_gating", "highest_utility"]
+        internal_baselines = (
+            ["base_model", "flat_all", "static_best", "random_gating", "highest_utility"]
+            if args.run_internal_baselines else []
+        )
         harness = EvalHarness(
             executor=executor,
             metric=metric,
@@ -859,7 +867,7 @@ def main():
             logger=ppg_logger,
         )
 
-        _step_rule(4, 4, "Evaluating PPG + internal baselines...")
+        _step_rule(4, 4, "Evaluating PPG...")
         real_opt_calls = train_real_calls + ppg_calibration_real_calls
         all_metrics["ppg"] = harness.evaluate_splits(
             "ppg", _splits, lm_counter=lm,
@@ -877,10 +885,11 @@ def main():
                 name, _splits, lm_counter=lm, opt_calls=0
             )["test"]
 
-        optimized_prompts["flat_all"]        = build_seed_prompt(graph)
-        optimized_prompts["static_best"]     = build_best_path_prompt(graph)
-        optimized_prompts["random_gating"]   = "[dynamic: random node selection per input]"
-        optimized_prompts["highest_utility"] = build_best_path_prompt(graph)
+        if internal_baselines:
+            optimized_prompts["flat_all"]        = build_seed_prompt(graph)
+            optimized_prompts["static_best"]     = build_best_path_prompt(graph)
+            optimized_prompts["random_gating"]   = "[dynamic: random node selection per input]"
+            optimized_prompts["highest_utility"] = build_best_path_prompt(graph)
 
     # ==================================================================
     # MIPROv2 path: compile → eval (independent)
@@ -1013,59 +1022,69 @@ def main():
     rows.sort(key=lambda d: d["task_accuracy"], reverse=True)
     winner = rows[0]["name"]
 
-    try:
-        from rich.console import Console
-        from rich.table import Table
-        from rich import box
+    ppg_only_output = (
+        run_ppg
+        and not args.run_internal_baselines
+        and not args.run_mipro
+        and not args.run_gepa
+        and not args.run_base
+    )
 
-        rtable = Table(
-            title=f"[bold]Results — {bench}  |  {args.model}[/bold]",
-            box=box.ROUNDED,
-            show_lines=False,
-            header_style="bold cyan",
-            padding=(0, 1),
-        )
-        rtable.add_column("System",     style="bold",    no_wrap=True, min_width=16)
-        rtable.add_column("TaskAcc",    justify="right", min_width=8)
-        rtable.add_column("StdTask",    justify="right", min_width=8)
-        rtable.add_column("AvgTok",     justify="right", min_width=8)
-        rtable.add_column("Constraint", justify="right", min_width=11)
-        rtable.add_column("LM Calls",   justify="right", min_width=9)
+    if not ppg_only_output:
+        try:
+            from rich.console import Console
+            from rich.table import Table
+            from rich import box
 
-        for row in rows:
-            is_winner = row["name"] == winner
-            name_str  = (f"[bold green]{row['name']}[/bold green]" if is_winner
-                         else row["name"])
-            acc_str   = (f"[bold green]{row['task_accuracy']:.4f}[/bold green]"
-                         if is_winner else f"{row['task_accuracy']:.4f}")
-            rtable.add_row(
-                name_str,
-                acc_str,
-                f"{row['std_task']:.4f}",
-                f"{row['mean_tokens']:.1f}",
-                f"{row['mean_constraint']:.4f}",
-                str(row["lm_calls"]),
+            rtable = Table(
+                title=f"[bold]Results — {bench}  |  {args.model}[/bold]",
+                box=box.ROUNDED,
+                show_lines=False,
+                header_style="bold cyan",
+                padding=(0, 1),
             )
+            rtable.add_column("System",     style="bold",    no_wrap=True, min_width=16)
+            rtable.add_column("TaskAcc",    justify="right", min_width=8)
+            rtable.add_column("StdTask",    justify="right", min_width=8)
+            rtable.add_column("AvgTok",     justify="right", min_width=8)
+            rtable.add_column("Constraint", justify="right", min_width=11)
+            rtable.add_column("LM Calls",   justify="right", min_width=9)
 
-        rc = Console()
-        rc.print(rtable)
-        rc.print(f"  Winner: [bold green]{winner}[/bold green]")
-        if train_time > 0:
-            rc.print(f"  Training: {train_time:.0f}s")
-    except ImportError:
-        print(f"\n{'System':<18} {'TaskAcc':>8} {'StdTask':>8} {'AvgTok':>8} "
-              f"{'Constraint':>11} {'LMCalls':>8}")
-        print("-" * 65)
-        for row in rows:
-            print(f"{row['name']:<18} {row['task_accuracy']:>8.4f} {row['std_task']:>8.4f} "
-                  f"{row['mean_tokens']:>8.1f} {row['mean_constraint']:>11.4f} "
-                  f"{row['lm_calls']:>8}")
-        print(f"\nWinner: {winner}")
+            for row in rows:
+                is_winner = row["name"] == winner
+                name_str  = (f"[bold green]{row['name']}[/bold green]" if is_winner
+                             else row["name"])
+                acc_str   = (f"[bold green]{row['task_accuracy']:.4f}[/bold green]"
+                             if is_winner else f"{row['task_accuracy']:.4f}")
+                rtable.add_row(
+                    name_str,
+                    acc_str,
+                    f"{row['std_task']:.4f}",
+                    f"{row['mean_tokens']:.1f}",
+                    f"{row['mean_constraint']:.4f}",
+                    str(row["lm_calls"]),
+                )
+
+            rc = Console()
+            rc.print(rtable)
+            rc.print(f"  Winner: [bold green]{winner}[/bold green]")
+            if train_time > 0:
+                rc.print(f"  Training: {train_time:.0f}s")
+        except ImportError:
+            print(f"\n{'System':<18} {'TaskAcc':>8} {'StdTask':>8} {'AvgTok':>8} "
+                  f"{'Constraint':>11} {'LMCalls':>8}")
+            print("-" * 65)
+            for row in rows:
+                print(f"{row['name']:<18} {row['task_accuracy']:>8.4f} "
+                      f"{row['std_task']:>8.4f} "
+                      f"{row['mean_tokens']:>8.1f} {row['mean_constraint']:>11.4f} "
+                      f"{row['lm_calls']:>8}")
+            print(f"\nWinner: {winner}")
 
     # ------------------------------------------------------------------
     # Print optimized prompts
     # ------------------------------------------------------------------
-    if optimized_prompts:
+    if optimized_prompts and not ppg_only_output:
         try:
             from rich.console import Console as _RC
             from rich.panel import Panel as _RP
