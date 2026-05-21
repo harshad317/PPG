@@ -578,9 +578,10 @@ def main():
             credit_cfg.skip_terminal = False
             credit_cfg.p_ablate = 0.15
 
-        # F1 benchmarks: use ExactMatch for credit assignment (cleaner 0/1 signal)
+        # F1 benchmarks with short answers: use ExactMatch for credit (cleaner 0/1).
+        # HotpotQA excluded — its span answers need F1's graded signal for LOO.
         credit_metric = None
-        if bench in ("hotpotqa", "drop", "truthfulqa"):
+        if bench in ("drop", "truthfulqa"):
             from ppg.training.reward import ExactMatchMetric
             credit_metric = ExactMatchMetric()
 
