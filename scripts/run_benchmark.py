@@ -14,6 +14,7 @@ ppg (default)  : PPG only
 --run-mipro    : MIPROv2 (DSPy, auto='heavy') — standalone, no PPG training
 --run-gepa     : GEPA (DSPy) — standalone, no PPG training
 --include-ppg  : Add PPG training + eval when using --run-mipro/--run-gepa
+--diagnostic-report : Print the full PPG diagnostic report after the score table
 
 Graph map (each benchmark has its own dedicated fragment set)
 -------------------------------------------------------------
@@ -457,6 +458,10 @@ def main():
                              "set to os.cpu_count() for max throughput)")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress tqdm/rich progress bars")
+    parser.add_argument("--diagnostic-report", action="store_true",
+                        dest="diagnostic_report",
+                        help="Print the full PPG diagnostic report after results. "
+                             "The report is still written to the log directory when logging is enabled.")
 
     # --- Production mode: enables all new features ---
     parser.add_argument("--production", action="store_true",
@@ -1151,7 +1156,7 @@ def main():
     # ------------------------------------------------------------------
     # Diagnostic report (production mode)
     # ------------------------------------------------------------------
-    if run_ppg and use_prod and hasattr(ppg_logger, "diagnostic_report"):
+    if args.diagnostic_report and run_ppg and use_prod and hasattr(ppg_logger, "diagnostic_report"):
         report_text = ppg_logger.diagnostic_report()
         if report_text:
             print(f"\n{'=' * 60}")

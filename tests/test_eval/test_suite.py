@@ -136,12 +136,14 @@ def test_run_suite_build_command_includes_suite_controls():
         ppg_path_candidates=33,
         ppg_ensemble_paths=3,
         ppg_calibration_patience=0,
+        diagnostic_report=True,
     )
 
     cmd = module.build_command(args, "hotpotqa", Path("/repo"))
 
     assert "--production" in cmd
     assert "--include-ppg" in cmd
+    assert "--diagnostic-report" in cmd
     assert cmd[cmd.index("--ppg-path-candidates") + 1] == "33"
     assert cmd[cmd.index("--ppg-ensemble-paths") + 1] == "3"
     assert cmd[cmd.index("--ppg-calibration-patience") + 1] == "0"

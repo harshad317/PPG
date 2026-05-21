@@ -106,6 +106,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ppg-path-candidates", type=int, default=None)
     parser.add_argument("--ppg-ensemble-paths", type=int, default=None)
     parser.add_argument("--ppg-calibration-patience", type=int, default=0)
+    parser.add_argument("--diagnostic-report", action="store_true",
+                        help="Forward --diagnostic-report to each benchmark run")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print commands without running them")
     parser.add_argument("--summarize-only", action="store_true",
@@ -189,6 +191,8 @@ def build_command(args: argparse.Namespace, benchmark: str, repo_root: Path) -> 
         cmd.extend(["--mmlu-subject", args.mmlu_subject])
     if args.production:
         cmd.append("--production")
+    if args.diagnostic_report:
+        cmd.append("--diagnostic-report")
     if args.no_cache:
         cmd.append("--no-cache")
     else:

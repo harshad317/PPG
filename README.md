@@ -294,6 +294,7 @@ Useful flags:
 | `--workers N` | Runs episode collection and evaluation LM calls with thread workers |
 | `--run-mipro`, `--run-gepa` | Runs external prompt optimizer baselines |
 | `--run-internal-baselines` | Also runs diagnostic internal baselines after PPG |
+| `--diagnostic-report` | Prints the full PPG diagnostic report after the score table |
 | `--include-ppg` | Includes PPG when running external baselines |
 | `--cache-dir DIR`, `--no-cache` | Controls disk caching for LM calls |
 | `--output-dir DIR` | Writes result JSON files to `DIR` |
