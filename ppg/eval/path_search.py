@@ -34,23 +34,52 @@ def path_utility(graph: PPGraph, path: list[str]) -> float:
 
 def ranked_paths(graph: PPGraph, max_candidates: Optional[int] = None) -> list[list[str]]:
     """
-    Enumerate complete graph paths, ranked by learned utility.
+    Enumerate complete graph paths with a diversified candidate set.
 
-    ``max_candidates=None`` keeps all paths.  When capped, the search spends
-    validation calls on the routes most supported by LOO utility estimates.
+    When ``max_candidates`` is set, the candidate pool is split:
+      - First half: top paths by learned utility (explore best-known routes)
+      - Second half: shortest paths by node count (explore concise routes)
+
+    This prevents F1-inflated utilities from filling the entire candidate set
+    with verbose paths, ensuring calibration can compare both strategies.
+
+    ``max_candidates=None`` keeps all paths sorted by utility.
     """
     paths = [list(p) for p in graph.all_paths()]
-    paths.sort(
-        key=lambda p: (
+
+    def _sort_key(p):
+        return (
             -path_utility(graph, p),
             len(p),
             " ".join(graph.nodes[nid].type.value for nid in p),
             " ".join(graph.nodes[nid].template for nid in p),
         )
-    )
-    if max_candidates is not None and max_candidates > 0:
-        return paths[:max_candidates]
-    return paths
+
+    if max_candidates is None or max_candidates <= 0:
+        paths.sort(key=_sort_key)
+        return paths
+
+    by_utility = sorted(paths, key=_sort_key)
+    by_length = sorted(paths, key=lambda p: (
+        len(p),
+        -path_utility(graph, p),
+    ))
+
+    half = max_candidates // 2
+    seen: set[tuple[str, ...]] = set()
+    result: list[list[str]] = []
+
+    for source in (by_utility, by_length):
+        budget = half if source is by_utility else max_candidates
+        for p in source:
+            key = tuple(p)
+            if key not in seen:
+                seen.add(key)
+                result.append(p)
+            if len(result) >= budget:
+                break
+
+    return result[:max_candidates]
 
 
 def select_path_by_validation(
