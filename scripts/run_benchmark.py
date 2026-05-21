@@ -578,12 +578,17 @@ def main():
             credit_cfg.skip_terminal = False
             credit_cfg.p_ablate = 0.15
 
-        # F1 benchmarks with short answers: use ExactMatch for credit (cleaner 0/1).
-        # HotpotQA excluded — its span answers need F1's graded signal for LOO.
+        # Cleaner credit metrics for LOO signal:
+        # - DROP/TruthfulQA: ExactMatch (short answers, clean 0/1)
+        # - HotpotQA: SubstringMatch (ref in pred — less verbose bias than F1,
+        #   more forgiving than EM for span answers and yes/no)
         credit_metric = None
         if bench in ("drop", "truthfulqa"):
             from ppg.training.reward import ExactMatchMetric
             credit_metric = ExactMatchMetric()
+        elif bench == "hotpotqa":
+            from ppg.training.reward import SubstringMatchMetric
+            credit_metric = SubstringMatchMetric()
 
         credit = CreditAssigner(
             lm=lm,

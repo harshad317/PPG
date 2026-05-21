@@ -82,6 +82,13 @@ def ranked_paths(graph: PPGraph, max_candidates: Optional[int] = None) -> list[l
     return result[:max_candidates]
 
 
+def _estimate_input_tokens(examples: list[EvalExample]) -> float:
+    """Mean token count of raw inputs (no prompt fragments)."""
+    if not examples:
+        return 0.0
+    return statistics.mean(count_tokens(ex.x) for ex in examples)
+
+
 def select_path_by_validation(
     graph: PPGraph,
     examples: list[EvalExample],
@@ -93,18 +100,19 @@ def select_path_by_validation(
     n_workers: int = 1,
     show_progress: bool = False,
     early_stop_patience: int = 10,
-    token_efficiency_weight: float = 0.01,
+    token_efficiency_weight: float = 0.02,
     max_tokens_ref: int = 2048,
 ) -> PathSearchResult:
     """
-    Select the complete graph path with highest token-adjusted validation score.
+    Select the complete graph path with highest overhead-adjusted validation score.
 
-    Adjusted score = val_score - token_efficiency_weight * (mean_tokens / max_tokens_ref).
-    This prevents marginal accuracy gains from justifying massive token bloat
-    (e.g. a 0.004 accuracy gain with 2x token count).
+    Token penalty is computed on FRAGMENT OVERHEAD only (total tokens minus
+    average input tokens), not total prompt length. This prevents penalizing
+    inherently long inputs (e.g. HotpotQA's 10-passage context).
 
-    Paths are ranked by learned utility before evaluation. When
-    ``max_candidates`` is set, only that many top-utility paths are scored.
+    Adjusted score = val_score - weight * max(0, mean_tokens - input_tokens) / ref
+
+    When ``max_candidates`` exceeds total paths, evaluates all paths.
     Early stopping fires when the best score hasn't improved for
     ``early_stop_patience`` consecutive paths.
 
@@ -114,9 +122,17 @@ def select_path_by_validation(
         raise ValueError("examples must be non-empty")
 
     total_paths = graph.path_count()
-    paths = ranked_paths(graph, max_candidates=max_candidates)
+
+    # Evaluate all paths when graph is small enough
+    effective_max = max_candidates
+    if effective_max is not None and total_paths <= effective_max * 2:
+        effective_max = None
+
+    paths = ranked_paths(graph, max_candidates=effective_max)
     if not paths:
         raise ValueError("graph has no complete paths")
+
+    input_tokens = _estimate_input_tokens(examples)
 
     iterator = paths
     bar = None
@@ -153,7 +169,8 @@ def select_path_by_validation(
             total_paths=total_paths,
         )
         if best is None or _is_better(candidate, best,
-                                       token_efficiency_weight, max_tokens_ref):
+                                       token_efficiency_weight, max_tokens_ref,
+                                       input_tokens):
             best = candidate
             no_improve_count = 0
         else:
@@ -218,9 +235,11 @@ def _is_better(
     incumbent: PathSearchResult,
     token_weight: float = 0.02,
     max_tokens_ref: int = 2048,
+    input_tokens: float = 0.0,
 ) -> bool:
     def _adj(r: PathSearchResult) -> float:
-        return r.val_score - token_weight * (r.mean_tokens / max_tokens_ref)
+        overhead = max(0.0, r.mean_tokens - input_tokens)
+        return r.val_score - token_weight * (overhead / max_tokens_ref)
 
     c_adj = _adj(candidate)
     i_adj = _adj(incumbent)
