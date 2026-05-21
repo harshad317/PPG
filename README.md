@@ -287,6 +287,7 @@ Useful flags:
 | `--ppg-path-candidates N` | Limits validation path search to the top `N` utility-ranked paths |
 | `--production` | Enables production configs: self-consistency escalation, semantic clusters, Pareto reward, GRPO, reflection, evolution, branching |
 | `--sample-temperature T`, `--k-samples N` | Control stochastic self-consistency samples used by production escalation/majority voting |
+| `--timeout S`, `--max-retries N`, `--parse-retries N` | Tune provider request timeouts, SDK retries, and extra retries for empty/non-JSON provider responses |
 | `--no-reflection`, `--no-evolution`, `--no-branching`, `--no-pareto` | Disable individual production features |
 | `--workers N` | Runs episode collection and evaluation LM calls with thread workers |
 | `--run-mipro`, `--run-gepa` | Runs external prompt optimizer baselines |

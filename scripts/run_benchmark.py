@@ -321,6 +321,9 @@ def make_lm(
     *,
     temperature: float = 0.0,
     sample_temperature: float | None = None,
+    timeout: float = 30.0,
+    max_retries: int = 3,
+    parse_retries: int = 2,
 ):
     if provider == "openai":
         from ppg.lm.clients import OpenAIClient, OpenAIConfig
@@ -329,6 +332,9 @@ def make_lm(
             temperature=temperature,
             sample_temperature=sample_temperature,
             max_tokens=2048,
+            timeout=timeout,
+            max_retries=max_retries,
+            parse_retries=parse_retries,
         ))
     elif provider == "anthropic":
         from ppg.lm.clients import AnthropicClient, AnthropicConfig
@@ -337,6 +343,9 @@ def make_lm(
             temperature=temperature,
             sample_temperature=sample_temperature,
             max_tokens=2048,
+            timeout=timeout,
+            max_retries=max_retries,
+            parse_retries=parse_retries,
         ))
     else:
         raise ValueError(f"Unknown provider: {provider!r}")
@@ -374,6 +383,14 @@ def main():
                              "(default: same as --temperature)")
     parser.add_argument("--k-samples", type=int, default=None, dest="k_samples",
                         help="Override production self-consistency sample count")
+    parser.add_argument("--timeout", type=float, default=30.0,
+                        help="Per-request LM timeout in seconds (default: 30)")
+    parser.add_argument("--max-retries", type=int, default=3, dest="max_retries",
+                        help="Provider SDK retry count for retryable API errors "
+                             "(default: 3)")
+    parser.add_argument("--parse-retries", type=int, default=2, dest="parse_retries",
+                        help="Extra retries for empty/non-JSON provider responses "
+                             "(default: 2)")
     parser.add_argument("--reflection-model", default="gpt-4o",
                         dest="reflection_model",
                         help="GEPA reflection LM — more capable model recommended (default: gpt-4o)")
@@ -507,6 +524,9 @@ def main():
         cache_dir,
         temperature=args.temperature,
         sample_temperature=args.sample_temperature,
+        timeout=args.timeout,
+        max_retries=args.max_retries,
+        parse_retries=args.parse_retries,
     ))
 
     # ------------------------------------------------------------------
@@ -640,6 +660,9 @@ def main():
                     cache_dir,
                     temperature=args.temperature,
                     sample_temperature=args.sample_temperature,
+                    timeout=args.timeout,
+                    max_retries=args.max_retries,
+                    parse_retries=args.parse_retries,
                 ))
 
             if not args.no_reflection:

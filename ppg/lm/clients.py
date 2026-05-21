@@ -21,8 +21,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import threading
+import time
 from dataclasses import dataclass
+from json import JSONDecodeError
 from typing import Optional
 
 
@@ -37,6 +40,7 @@ class OpenAIConfig:
     max_tokens:         int             = 512
     timeout:            float           = 30.0
     max_retries:        int             = 3
+    parse_retries:      int             = 2
     system_msg:         str             = "You are a helpful assistant."
     sample_temperature: Optional[float] = None
 
@@ -48,6 +52,7 @@ class AnthropicConfig:
     max_tokens:         int             = 512
     timeout:            float           = 30.0
     max_retries:        int             = 3
+    parse_retries:      int             = 2
     system_msg:         str             = "You are a helpful assistant."
     sample_temperature: Optional[float] = None
 
@@ -55,6 +60,32 @@ class AnthropicConfig:
 # ---------------------------------------------------------------------------
 # OpenAIClient
 # ---------------------------------------------------------------------------
+
+def _retry_parse_errors(fn, *, retries: int):
+    """
+    Retry SDK response-parse failures that usually mean an empty/non-JSON body.
+
+    The official SDK handles normal transport/status retries. This outer guard
+    covers the raw JSONDecodeError that can still surface during high-throughput
+    benchmark runs before the SDK can wrap it in an API exception.
+    """
+    attempts = max(0, retries) + 1
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except JSONDecodeError:
+            if attempt == attempts - 1:
+                raise
+            _sleep_before_retry(attempt)
+
+    raise RuntimeError("unreachable")
+
+
+def _sleep_before_retry(attempt: int) -> None:
+    delay = min(4.0, 0.5 * (2 ** attempt))
+    jitter = 0.75 + random.random() * 0.5
+    time.sleep(delay * jitter)
+
 
 class OpenAIClient:
     """
@@ -86,14 +117,17 @@ class OpenAIClient:
         )
 
     def complete(self, prompt: str) -> str:
-        response = self._client.chat.completions.create(
-            model=self.cfg.model,
-            temperature=self.cfg.temperature,
-            max_tokens=self.cfg.max_tokens,
-            messages=[
-                {"role": "system",  "content": self.cfg.system_msg},
-                {"role": "user",    "content": prompt},
-            ],
+        response = _retry_parse_errors(
+            lambda: self._client.chat.completions.create(
+                model=self.cfg.model,
+                temperature=self.cfg.temperature,
+                max_tokens=self.cfg.max_tokens,
+                messages=[
+                    {"role": "system",  "content": self.cfg.system_msg},
+                    {"role": "user",    "content": prompt},
+                ],
+            ),
+            retries=self.cfg.parse_retries,
         )
         return response.choices[0].message.content or ""
 
@@ -101,19 +135,22 @@ class OpenAIClient:
         """Return n independent completions for self-consistency decoding."""
         if n <= 1:
             return [self.complete(prompt)]
-        response = self._client.chat.completions.create(
-            model=self.cfg.model,
-            temperature=(
-                self.cfg.sample_temperature
-                if self.cfg.sample_temperature is not None
-                else self.cfg.temperature
+        response = _retry_parse_errors(
+            lambda: self._client.chat.completions.create(
+                model=self.cfg.model,
+                temperature=(
+                    self.cfg.sample_temperature
+                    if self.cfg.sample_temperature is not None
+                    else self.cfg.temperature
+                ),
+                max_tokens=self.cfg.max_tokens,
+                n=n,
+                messages=[
+                    {"role": "system", "content": self.cfg.system_msg},
+                    {"role": "user", "content": prompt},
+                ],
             ),
-            max_tokens=self.cfg.max_tokens,
-            n=n,
-            messages=[
-                {"role": "system", "content": self.cfg.system_msg},
-                {"role": "user", "content": prompt},
-            ],
+            retries=self.cfg.parse_retries,
         )
         return [choice.message.content or "" for choice in response.choices]
 
@@ -152,12 +189,15 @@ class AnthropicClient:
         )
 
     def complete(self, prompt: str) -> str:
-        message = self._client.messages.create(
-            model=self.cfg.model,
-            temperature=self.cfg.temperature,
-            max_tokens=self.cfg.max_tokens,
-            system=self.cfg.system_msg,
-            messages=[{"role": "user", "content": prompt}],
+        message = _retry_parse_errors(
+            lambda: self._client.messages.create(
+                model=self.cfg.model,
+                temperature=self.cfg.temperature,
+                max_tokens=self.cfg.max_tokens,
+                system=self.cfg.system_msg,
+                messages=[{"role": "user", "content": prompt}],
+            ),
+            retries=self.cfg.parse_retries,
         )
         return message.content[0].text if message.content else ""
 
@@ -172,12 +212,15 @@ class AnthropicClient:
         )
         samples = []
         for _ in range(n):
-            message = self._client.messages.create(
-                model=self.cfg.model,
-                temperature=temperature,
-                max_tokens=self.cfg.max_tokens,
-                system=self.cfg.system_msg,
-                messages=[{"role": "user", "content": prompt}],
+            message = _retry_parse_errors(
+                lambda: self._client.messages.create(
+                    model=self.cfg.model,
+                    temperature=temperature,
+                    max_tokens=self.cfg.max_tokens,
+                    system=self.cfg.system_msg,
+                    messages=[{"role": "user", "content": prompt}],
+                ),
+                retries=self.cfg.parse_retries,
             )
             samples.append(message.content[0].text if message.content else "")
         return samples

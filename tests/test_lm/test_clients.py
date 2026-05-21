@@ -64,6 +64,7 @@ class TestOpenAIConfig:
         assert cfg.temperature == pytest.approx(0.0)
         assert cfg.max_tokens  == 512
         assert cfg.max_retries == 3
+        assert cfg.parse_retries == 2
 
     def test_custom(self):
         cfg = OpenAIConfig(model="gpt-4o", max_tokens=1024, temperature=0.7)
@@ -82,6 +83,7 @@ class TestAnthropicConfig:
         assert cfg.temperature == pytest.approx(0.0)
         assert cfg.max_tokens  == 512
         assert cfg.max_retries == 3
+        assert cfg.parse_retries == 2
 
     def test_custom(self):
         cfg = AnthropicConfig(model="claude-opus-4-7", max_tokens=256)
@@ -200,6 +202,38 @@ class TestOpenAIClient:
         assert call_kwargs["n"] == 3
         assert call_kwargs["temperature"] == pytest.approx(0.7)
         assert samples == ["a", "b", "c"]
+
+    def test_complete_retries_json_decode_error(self):
+        mock_openai = MagicMock()
+        mock_client = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+        mock_client.chat.completions.create.side_effect = [
+            json.JSONDecodeError("Expecting value", "", 0),
+            _make_openai_mock_response("recovered"),
+        ]
+        cfg = OpenAIConfig(parse_retries=1)
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            with patch("ppg.lm.clients.time.sleep"):
+                client = OpenAIClient(config=cfg, api_key="k")
+                result = client.complete("prompt")
+        assert result == "recovered"
+        assert mock_client.chat.completions.create.call_count == 2
+
+    def test_sample_retries_json_decode_error(self):
+        mock_openai = MagicMock()
+        mock_client = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+        mock_client.chat.completions.create.side_effect = [
+            json.JSONDecodeError("Expecting value", "", 0),
+            _make_openai_mock_choices(["a", "b"]),
+        ]
+        cfg = OpenAIConfig(parse_retries=1)
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            with patch("ppg.lm.clients.time.sleep"):
+                client = OpenAIClient(config=cfg, api_key="k")
+                samples = client.sample("prompt", 2)
+        assert samples == ["a", "b"]
+        assert mock_client.chat.completions.create.call_count == 2
 
 
 # ---------------------------------------------------------------------------
