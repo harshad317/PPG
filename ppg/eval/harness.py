@@ -37,6 +37,7 @@ Usage
 from __future__ import annotations
 
 import statistics
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -186,6 +187,11 @@ class EvalConfig:
     # Optional calibrated deployment path for PPG itself.  When set, PPG is
     # evaluated as the selected fixed route rather than the raw LinUCB router.
     ppg_path: Optional[list[str]] = None
+
+    # Optional top validation paths for deployment-time path ensembling.
+    # When set to 2+ paths, PPG runs each path and majority-votes the normalized
+    # short answer. Paths should be ordered best-first by validation utility.
+    ppg_paths: Optional[list[list[str]]] = None
     seed: int = 0
 
     # Progress display
@@ -576,6 +582,27 @@ class EvalHarness:
     # ------------------------------------------------------------------
 
     def _run_ppg(self, examples: list[EvalExample]) -> BaselineMetrics:
+        if self._cfg.ppg_paths and len(self._cfg.ppg_paths) > 1:
+            if self._executor is None:
+                raise ValueError("PPG path ensemble evaluation requires an executor")
+            paths = self._cfg.ppg_paths
+
+            def _call_ensemble(ex: EvalExample) -> tuple[str, int]:
+                traces = [self._executor.execute_path(ex.x, path) for path in paths]
+                response = self._select_ensemble_response([t.lm_response for t in traces])
+                return response, sum(t.token_count for t in traces)
+
+            scores, tokens, cscores = self._run_examples(
+                examples, _call_ensemble, desc="eval ppg      "
+            )
+            return BaselineMetrics(
+                name="ppg",
+                task_scores=scores,
+                token_counts=tokens,
+                constraint_scores=cscores,
+                lm_calls=len(examples) * len(paths),
+            )
+
         if self._cfg.ppg_path is not None:
             if self._executor is None:
                 raise ValueError("PPG evaluation requires an executor")
@@ -612,6 +639,20 @@ class EvalHarness:
             constraint_scores=cscores,
             lm_calls=len(examples),
         )
+
+    def _select_ensemble_response(self, responses: list[str]) -> str:
+        if not responses:
+            return ""
+        normalizer = getattr(getattr(self._executor, "fx", None), "normalizer", None)
+        if normalizer is None:
+            return responses[0]
+        normalized = [normalizer(response) for response in responses]
+        counts = Counter(normalized)
+        best_answer, _ = counts.most_common(1)[0]
+        for answer, response in zip(normalized, responses):
+            if answer == best_answer:
+                return response
+        return responses[0]
 
     # ------------------------------------------------------------------
     # Baseline dispatch

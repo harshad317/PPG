@@ -139,6 +139,17 @@ class TestF1Metric:
         score = self.m.score("the cat sat", "the cat")
         assert 0.0 < score < 1.0
 
+    def test_extracts_final_answer_line(self):
+        score = self.m.score("Reasoning...\nFinal answer: Paris, France.", "Paris France")
+        assert score == pytest.approx(1.0)
+
+    def test_extracts_inline_answer(self):
+        score = self.m.score("After reading, the answer is Ada Lovelace.", "Ada Lovelace")
+        assert score == pytest.approx(1.0)
+
+    def test_ignores_articles_for_span_qa(self):
+        assert self.m.score("The Hague", "Hague") == pytest.approx(1.0)
+
     def test_empty_both(self):
         assert self.m.score("", "") == pytest.approx(1.0)
 

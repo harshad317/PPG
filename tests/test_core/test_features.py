@@ -42,6 +42,14 @@ class TestDefaultNormalizer:
         result = default_normalizer("Yes!")
         assert result == "yes"
 
+    def test_extracts_text_final_answer_line(self):
+        result = default_normalizer("Reasoning here.\nFinal answer: Paris, France.")
+        assert result == "paris france"
+
+    def test_extracts_inline_text_answer(self):
+        result = default_normalizer("After checking the passages, the answer is Ada Lovelace.")
+        assert result == "ada lovelace"
+
     def test_empty_string(self):
         result = default_normalizer("")
         assert result == ""

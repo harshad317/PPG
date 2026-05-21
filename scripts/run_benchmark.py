@@ -418,6 +418,10 @@ def main():
                         dest="ppg_path_candidates",
                         help="Number of utility-ranked paths to validate for PPG; "
                              "0 searches all complete paths (default: 0)")
+    parser.add_argument("--ppg-ensemble-paths", type=int, default=1,
+                        dest="ppg_ensemble_paths",
+                        help="Deploy a majority-vote ensemble of the top N "
+                             "validation paths for PPG (default: 1)")
     parser.add_argument("--run-base",  action="store_true", dest="run_base",
                         help="Run base model eval only (raw input, no prompt engineering). Skips PPG unless --include-ppg.")
     parser.add_argument("--run-mipro", action="store_true", dest="run_mipro",
@@ -758,6 +762,7 @@ def main():
 
         # --- Calibrate ---
         ppg_path = None
+        ppg_paths = None
         ppg_calibration_calls = 0
         ppg_calibration_real_calls = 0
         ppg_calibration_info = None
@@ -784,6 +789,7 @@ def main():
                 max_candidates=max_candidates,
                 n_workers=args.workers,
                 show_progress=show_progress,
+                return_top_k=max(1, args.ppg_ensemble_paths),
             )
             ppg_calibration_calls = lm.reset()
             ppg_calibration_real_calls = (
@@ -791,10 +797,12 @@ def main():
                 else ppg_calibration_calls
             )
             ppg_path = selected.path
+            ppg_paths = [c.path for c in selected.candidates]
             ppg_calibration_info = {
                 "val_score":       round(selected.val_score, 4),
                 "mean_tokens":     round(selected.mean_tokens, 1),
                 "utility":         round(selected.utility, 4),
+                "ensemble_paths":  len(ppg_paths or []),
                 "n_paths_scored":  selected.n_paths_scored,
                 "total_paths":     selected.total_paths,
                 "api_calls":       ppg_calibration_calls,
@@ -805,6 +813,7 @@ def main():
                 f"selected path val={selected.val_score:.4f}  "
                 f"avg_tok={selected.mean_tokens:.1f}  "
                 f"paths={selected.n_paths_scored}/{selected.total_paths}  "
+                f"ensemble={len(ppg_paths or [])}  "
                 f"api_calls={ppg_calibration_calls}  "
                 f"real_calls={ppg_calibration_real_calls}"
             )
@@ -824,6 +833,7 @@ def main():
             config=EvalConfig(
                 baselines=internal_baselines,
                 ppg_path=ppg_path,
+                ppg_paths=ppg_paths,
                 show_progress=show_progress,
                 n_workers=args.workers,
             ),

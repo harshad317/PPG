@@ -234,12 +234,14 @@ class AnswerNormalizer(Protocol):
 def default_normalizer(text: str) -> str:
     """
     Best-effort normaliser for short-answer tasks (math, MC, QA).
-    Priority: extract last number > strip punctuation/case.
+    Priority: extract last number > extract final answer span > strip
+    punctuation/case.
     """
     text = text.strip().lower()
     numeric = _extract_numeric_answer(text)
     if numeric is not None:
         return numeric
+    text = _extract_final_answer_text(text)
     # fallback: strip non-alphanumeric boundaries
     return re.sub(r"[^a-z0-9\s]", "", text).strip()
 
@@ -271,6 +273,33 @@ def _extract_numeric_answer(text: str) -> str | None:
         return f"{float(value):.12g}"
     except (ValueError, ZeroDivisionError):
         return None
+
+
+def _extract_final_answer_text(text: str) -> str:
+    """Extract common final-answer spans for short-answer voting."""
+    text = text.strip()
+    if not text:
+        return text
+
+    line_matches = re.findall(
+        r"(?im)^\s*(?:final\s+answer|answer)\s*(?:is|:)?\s*(.+?)\s*$",
+        text,
+    )
+    if line_matches:
+        return _strip_answer_boundaries(line_matches[-1])
+
+    inline_matches = re.findall(
+        r"(?i)(?:the\s+)?(?:final\s+)?answer\s+(?:is|:)\s*([^.\n]+)",
+        text,
+    )
+    if inline_matches:
+        return _strip_answer_boundaries(inline_matches[-1])
+
+    return text
+
+
+def _strip_answer_boundaries(text: str) -> str:
+    return text.strip().strip(" \t\r\n\"'`*#:-.!,;")
 
 
 def verbatim_normalizer(text: str) -> str:

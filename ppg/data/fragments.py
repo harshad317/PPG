@@ -688,6 +688,20 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "The question requires reasoning across two or more passages.\n\n"
                 "{input}"
             ),
+            # Variant: distractor-aware retrieval
+            (
+                "You are given titled passages with distractors. "
+                "Find the two passages that actually support the answer, ignore unrelated passages, "
+                "and answer using only those supporting facts.\n\n"
+                "{input}"
+            ),
+            # Variant: answer-span extraction
+            (
+                "Read the context and answer the question. "
+                "The final answer should be the shortest exact answer span supported by the passages, "
+                "or exactly yes/no when the question asks for yes/no.\n\n"
+                "{input}"
+            ),
         ],
         "domain_primer": [
             (
@@ -695,6 +709,16 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "Each question requires synthesizing information from two supporting passages. "
                 "Identify the bridge entity — the concept that links the two passages — "
                 "and use it to reach the final answer."
+            ),
+            (
+                "HotpotQA contexts include distractor passages. "
+                "Do not average across every passage. First select the relevant titles, "
+                "then combine only the facts needed to answer the question."
+            ),
+            (
+                "HotpotQA questions are usually bridge questions, comparison questions, or yes/no checks. "
+                "Bridge questions need an intermediate entity; comparison questions need matching attributes; "
+                "yes/no questions need a direct verification against the passages."
             ),
         ],
         "reasoning_style": [
@@ -727,6 +751,18 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
                 "If the question asks whether something is true, verify the claim "
                 "against the passages and answer 'yes' or 'no'."
             ),
+            # Variant: title-first evidence selection
+            (
+                "First identify the relevant passage titles. "
+                "Then extract one short fact from each relevant passage. "
+                "Combine those facts and give the final answer."
+            ),
+            # Variant: shortest-supported-span discipline
+            (
+                "Solve internally, but keep the final answer minimal. "
+                "For entity, place, date, or work-title questions, copy the shortest supported span. "
+                "For comparison questions, output the winning entity or yes/no as appropriate."
+            ),
         ],
         "compression": [
             "Reason briefly. Do not quote entire passages — extract only the relevant facts.",
@@ -745,6 +781,12 @@ FRAGMENTS: dict[str, dict[str, list[str]]] = {
             (
                 "Write ONLY the answer. No sentences, no reasoning, no preamble. "
                 "For yes/no questions, write exactly 'yes' or 'no'."
+            ),
+            # Variant: exact span discipline
+            (
+                "Write only the final answer span. "
+                "Do not write 'Answer:', do not include reasoning, and do not add surrounding words. "
+                "Use the shortest span that fully answers the question."
             ),
         ],
         "few_shot": [
@@ -1212,7 +1254,7 @@ def _build_rich(b: PPGraphBuilder, pick, frags: dict, include_few_shot: bool = F
     has_compression = "compression"   in frags
     has_few_shot    = include_few_shot and "few_shot" in frags
 
-    dp_id   = _add(FragmentType.DOMAIN_PRIMER,    frags["domain_primer"][0]) if has_primer else None
+    dp_ids  = [_add(FragmentType.DOMAIN_PRIMER,   t) for t in frags.get("domain_primer", [])] if has_primer else []
     tf_ids  = [_add(FragmentType.TASK_FRAMING,    t) for t in frags.get("task_framing",    [])]
     fs_ids  = [_add(FragmentType.FEW_SHOT,        t) for t in frags.get("few_shot",        [])] if has_few_shot else []
     rs_ids  = [_add(FragmentType.REASONING_STYLE, t) for t in frags.get("reasoning_style", [])]
@@ -1221,7 +1263,7 @@ def _build_rich(b: PPGraphBuilder, pick, frags: dict, include_few_shot: bool = F
 
     # DP → TF
     for tf_id in tf_ids:
-        if dp_id:
+        for dp_id in dp_ids:
             b.connect(dp_id, tf_id)
 
     if fs_ids:

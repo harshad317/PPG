@@ -67,6 +67,27 @@ def test_validation_search_can_override_utility_ranking():
     assert result.val_score == pytest.approx(1.0)
     assert result.n_paths_scored == 2
     assert result.total_paths == 2
+    assert result.candidates[0].path == [tf, good, oc]
+
+
+def test_validation_search_returns_top_candidates():
+    graph, ids = make_branching_graph()
+    tf, bad, good, oc = ids
+    lm = PromptAwareLM()
+
+    result = select_path_by_validation(
+        graph,
+        make_examples(3),
+        lm,
+        ExactMatchMetric(),
+        show_progress=False,
+        return_top_k=2,
+    )
+
+    assert [c.path for c in result.candidates] == [
+        [tf, good, oc],
+        [tf, bad, oc],
+    ]
 
 
 def test_ranked_paths_respects_candidate_cap():

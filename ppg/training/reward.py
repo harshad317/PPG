@@ -46,6 +46,41 @@ def _normalize(text: str) -> str:
     return " ".join(text.split())
 
 
+def _normalize_span(text: str) -> str:
+    """Hotpot/SQuAD-style normalisation for short answer spans."""
+    text = _extract_final_answer_text(text)
+    text = _normalize(text)
+    text = re.sub(r"\b(a|an|the)\b", " ", text)
+    return " ".join(text.split())
+
+
+def _extract_final_answer_text(text: str) -> str:
+    """Extract a final-answer span when the model emits reasoning + answer."""
+    text = text.strip()
+    if not text:
+        return text
+
+    line_matches = re.findall(
+        r"(?im)^\s*(?:final\s+answer|answer)\s*(?:is|:)?\s*(.+?)\s*$",
+        text,
+    )
+    if line_matches:
+        return _strip_answer_boundaries(line_matches[-1])
+
+    inline_matches = re.findall(
+        r"(?i)(?:the\s+)?(?:final\s+)?answer\s+(?:is|:)\s*([^.\n]+)",
+        text,
+    )
+    if inline_matches:
+        return _strip_answer_boundaries(inline_matches[-1])
+
+    return text
+
+
+def _strip_answer_boundaries(text: str) -> str:
+    return text.strip().strip(" \t\r\n\"'`*#:-.!,;")
+
+
 def _extract_number(text: str) -> str:
     """Return last numeric answer as a canonical string, or normalised text."""
     value = _extract_numeric_value(text)
@@ -107,8 +142,8 @@ class F1Metric:
     """
 
     def score(self, prediction: str, reference: str) -> float:
-        pred_tokens = _normalize(prediction).split()
-        ref_tokens  = _normalize(reference).split()
+        pred_tokens = _normalize_span(prediction).split()
+        ref_tokens  = _normalize_span(reference).split()
         if not pred_tokens or not ref_tokens:
             return 1.0 if pred_tokens == ref_tokens else 0.0
         pred_count = Counter(pred_tokens)

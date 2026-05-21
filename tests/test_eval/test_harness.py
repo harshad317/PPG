@@ -48,6 +48,17 @@ class PromptAwareLM:
         return "42" if "good route" in prompt else "wrong"
 
 
+class EnsembleRouteLM:
+    def __init__(self):
+        self.n_calls = 0
+
+    def complete(self, prompt: str) -> str:
+        self.n_calls += 1
+        if "good route" in prompt or "also good route" in prompt:
+            return "42"
+        return "wrong"
+
+
 class SamplingLM:
     def __init__(self):
         self.sample_calls = 0
@@ -101,6 +112,21 @@ def make_calibration_graph():
     b.connect(tf, good)
     b.connect(bad, oc)
     b.connect(good, oc)
+    return b.build(), ids
+
+
+def make_ensemble_graph():
+    b = PPGraphBuilder()
+    b.add_fragment(FragmentType.TASK_FRAMING, "Task: {input}")
+    b.add_fragment(FragmentType.REASONING_STYLE, "bad route")
+    b.add_fragment(FragmentType.REASONING_STYLE, "good route")
+    b.add_fragment(FragmentType.REASONING_STYLE, "also good route")
+    b.add_fragment(FragmentType.OUTPUT_CONTRACT, "Answer:")
+    ids = b.node_ids()
+    tf, bad, good, also_good, oc = ids
+    for route in (bad, good, also_good):
+        b.connect(tf, route)
+        b.connect(route, oc)
     return b.build(), ids
 
 
@@ -314,6 +340,32 @@ class TestEvalHarnessPPG:
         assert report.ppg.task_accuracy == pytest.approx(1.0)
         assert lm.sample_calls == 2
         assert lm.complete_calls == 0
+
+    def test_ppg_path_ensemble_majority_votes_responses(self):
+        graph, ids = make_ensemble_graph()
+        tf, bad, good, also_good, oc = ids
+        lm = EnsembleRouteLM()
+        executor = make_executor(graph, lm)
+        cfg = EvalConfig(
+            baselines=[],
+            ppg_paths=[
+                [tf, bad, oc],
+                [tf, good, oc],
+                [tf, also_good, oc],
+            ],
+        )
+        harness = EvalHarness(
+            executor=executor,
+            metric=ExactMatchMetric(),
+            lm=lm,
+            config=cfg,
+        )
+
+        report = harness.evaluate(make_examples(2, answer="42"))
+
+        assert report.ppg.task_accuracy == pytest.approx(1.0)
+        assert report.ppg.lm_calls == 6
+        assert lm.n_calls == 6
 
 
 # ---------------------------------------------------------------------------

@@ -285,6 +285,7 @@ Useful flags:
 | `--ppg-calibration val_path` | Selects the best fixed route on the validation split; default |
 | `--ppg-calibration dynamic` | Uses greedy learned routing per test input |
 | `--ppg-path-candidates N` | Limits validation path search to the top `N` utility-ranked paths |
+| `--ppg-ensemble-paths N` | Deploys a majority-vote ensemble of the top `N` validation paths |
 | `--production` | Enables production configs: self-consistency escalation, semantic clusters, Pareto reward, GRPO, reflection, evolution, branching |
 | `--sample-temperature T`, `--k-samples N` | Control stochastic self-consistency samples used by production escalation/majority voting |
 | `--timeout S`, `--max-retries N`, `--parse-retries N` | Tune provider request timeouts, SDK retries, and extra retries for empty/non-JSON provider responses |
