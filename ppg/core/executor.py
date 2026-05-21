@@ -366,15 +366,9 @@ class PPGExecutor:
                 if fired:
                     active.append(dst)
 
-            if not active or not train_mode:
-                # Intentional: at eval time use all successors so the bandit
-                # selects from the same full set it trained against.  Guards
-                # were all-pass (bias=-1e9) during training; applying synced
-                # thresholds at eval would block edges whose arms were trained
-                # on positive reward.  Also fallback when all guards are cold
-                # (early warmup) to avoid structural dead-ends.
-                # Note: sync_guards() writes weights for interpretability and
-                # downstream use, but selection here always uses UCB scores.
+            if not active:
+                # Fallback when all guards block (cold start or
+                # over-restrictive thresholds) to avoid dead-ends.
                 active = list(all_successors)
 
             # Selector breaks ties (or handles single active successor)

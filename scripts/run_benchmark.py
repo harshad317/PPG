@@ -14,10 +14,9 @@ ppg (default)  : PPG + internal baselines (flat_all, static_best, random_gating,
 --run-gepa     : GEPA (DSPy) — standalone, no PPG training
 --include-ppg  : Add PPG training + eval when using --run-mipro/--run-gepa
 
-Graph fallback map (benchmarks without dedicated fragments use the closest domain)
-----------------------------------------------------------------------------------
-drop         → hotpotqa graph   (reading comprehension)
-mmlu         → gsm8k graph      (MCQ reasoning)
+Graph map (each benchmark has its own dedicated fragment set)
+-------------------------------------------------------------
+All 9 benchmarks now have dedicated fragment graphs.
 
 Usage
 -----
@@ -59,12 +58,12 @@ _GRAPH_MAP: dict[str, str] = {
     "gsm8k":         "gsm8k",
     "ifbench":       "ifbench",
     "hotpotqa":      "hotpotqa",
-    "drop":          "hotpotqa",   # reading-comprehension domain
+    "drop":          "drop",
     "mbpp":          "mbpp",
     "truthfulqa":    "truthfulqa",
     "arc_challenge": "arc_challenge",
     "livebench_math":"livebench_math",
-    "mmlu":          "gsm8k",      # MCQ reasoning
+    "mmlu":          "mmlu",
 }
 
 SUPPORTED_BENCHMARKS = sorted(_GRAPH_MAP.keys())
@@ -578,6 +577,13 @@ def main():
             credit_cfg.skip_source = False
             credit_cfg.skip_terminal = False
             credit_cfg.p_ablate = 0.15
+
+        # F1 benchmarks: use ExactMatch for credit assignment (cleaner 0/1 signal)
+        credit_metric = None
+        if bench in ("hotpotqa", "drop", "truthfulqa"):
+            from ppg.training.reward import ExactMatchMetric
+            credit_metric = ExactMatchMetric()
+
         credit = CreditAssigner(
             lm=lm,
             assembler=assembler,
@@ -585,6 +591,7 @@ def main():
             config=credit_cfg,
             constraint_checker=constraint_checker,
             constraint_as_task=constraint_as_task,
+            credit_metric=credit_metric,
         )
 
         # --- Reflection / Evolution / Branching (production mode) ---
