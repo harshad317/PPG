@@ -6,6 +6,9 @@ from .features import (
     FeatureExtractor,
     AnswerNormalizer,
     default_normalizer,
+    multiple_choice_normalizer,
+    numeric_answer_normalizer,
+    span_answer_normalizer,
     verbatim_normalizer,
 )
 from .graph import (
@@ -38,6 +41,9 @@ __all__ = [
     "FeatureExtractor",
     "AnswerNormalizer",
     "default_normalizer",
+    "multiple_choice_normalizer",
+    "numeric_answer_normalizer",
+    "span_answer_normalizer",
     "verbatim_normalizer",
     # graph
     "FragmentType",

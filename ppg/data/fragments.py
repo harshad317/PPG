@@ -1238,10 +1238,14 @@ def _build_rich(b: PPGraphBuilder, pick, frags: dict, include_few_shot: bool = F
 
     DOMAIN_PRIMER → TF_v0 ─┬→ RS_v0 ─┬→ OC_v0
                    TF_v1 ─┘  RS_v1 ─┤  OC_v1
+                     │        ▲
+                     └→ FS_* ─┘
                               RS_v2 ─┘
                                 └→ COMP ─→ OC_*
 
-    All TF variants connect to all RS variants.
+    All TF variants connect to all RS variants. When few-shot fragments are
+    enabled, they are optional TF → FEW_SHOT → RS branches rather than a forced
+    layer, so validation can choose whether examples help a benchmark/run.
     RS variants connect directly to all OC variants and, when present, to
     COMP before OC. Compression is an optional post-reasoning add-on.
     """
@@ -1267,8 +1271,10 @@ def _build_rich(b: PPGraphBuilder, pick, frags: dict, include_few_shot: bool = F
             b.connect(dp_id, tf_id)
 
     if fs_ids:
-        # TF → FS → RS (few-shot between task framing and reasoning)
+        # TF → RS and TF → FS → RS (few-shot is optional)
         for tf_id in tf_ids:
+            for rs_id in rs_ids:
+                b.connect(tf_id, rs_id)
             for fs_id in fs_ids:
                 b.connect(tf_id, fs_id)
         for fs_id in fs_ids:

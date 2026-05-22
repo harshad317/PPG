@@ -582,10 +582,27 @@ class EvalHarness:
     # ------------------------------------------------------------------
 
     def _run_ppg(self, examples: list[EvalExample]) -> BaselineMetrics:
-        if self._cfg.ppg_paths and len(self._cfg.ppg_paths) > 1:
+        if self._cfg.ppg_paths:
             if self._executor is None:
-                raise ValueError("PPG path ensemble evaluation requires an executor")
+                raise ValueError("PPG calibrated path evaluation requires an executor")
             paths = self._cfg.ppg_paths
+            if len(paths) == 1:
+                path = paths[0]
+
+                def _call_single_selected(ex: EvalExample) -> tuple[str, int]:
+                    trace = self._executor.execute_path(ex.x, path)
+                    return trace.lm_response, trace.token_count
+
+                scores, tokens, cscores = self._run_examples(
+                    examples, _call_single_selected, desc="eval ppg      "
+                )
+                return BaselineMetrics(
+                    name="ppg",
+                    task_scores=scores,
+                    token_counts=tokens,
+                    constraint_scores=cscores,
+                    lm_calls=len(examples),
+                )
 
             def _call_ensemble(ex: EvalExample) -> tuple[str, int]:
                 traces = [self._executor.execute_path(ex.x, path) for path in paths]

@@ -312,6 +312,27 @@ class TestEvalHarnessPPG:
         report = harness.evaluate(make_examples(3, answer="42"))
         assert report.ppg.task_accuracy == pytest.approx(1.0)
 
+    def test_single_ppg_paths_entry_overrides_fallback_path(self):
+        graph, ids = make_calibration_graph()
+        tf, bad, good, oc = ids
+        lm = PromptAwareLM()
+        executor = make_executor(graph, lm)
+        cfg = EvalConfig(
+            baselines=[],
+            ppg_path=[tf, bad, oc],
+            ppg_paths=[[tf, good, oc]],
+        )
+        harness = EvalHarness(
+            executor=executor,
+            metric=ExactMatchMetric(),
+            lm=lm,
+            config=cfg,
+        )
+
+        report = harness.evaluate(make_examples(3, answer="42"))
+
+        assert report.ppg.task_accuracy == pytest.approx(1.0)
+
     def test_calibrated_ppg_path_keeps_executor_sampling(self):
         graph, ids = make_graph()
         lm = SamplingLM()

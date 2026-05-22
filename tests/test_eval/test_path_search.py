@@ -45,6 +45,11 @@ class ComplementaryRouteLM:
         return "wrong"
 
 
+class SingleCompletionBadLM:
+    def complete(self, prompt: str) -> str:
+        return "wrong"
+
+
 def _question_id(prompt: str) -> str:
     for qid in ("q0", "q1", "q2", "q3"):
         if qid in prompt:
@@ -162,6 +167,48 @@ def test_validation_search_scores_path_ensemble():
     assert result.val_score == pytest.approx(0.75)
     assert result.ensemble_val_score == pytest.approx(1.0)
     assert len(result.candidates) == 3
+
+
+def test_validation_search_can_score_with_deployment_path_runner():
+    graph, ids = make_branching_graph()
+    tf, _bad, good, oc = ids
+
+    def runner(path, ex):
+        response = "42" if path == [tf, good, oc] else "wrong"
+        return response, 7
+
+    result = select_path_by_validation(
+        graph,
+        make_examples(3),
+        SingleCompletionBadLM(),
+        ExactMatchMetric(),
+        show_progress=False,
+        path_runner=runner,
+    )
+
+    assert result.path == [tf, good, oc]
+    assert result.val_score == pytest.approx(1.0)
+    assert result.mean_tokens == pytest.approx(7.0)
+
+
+def test_validation_search_uses_custom_normalizer_for_ensemble_vote():
+    graph, _ids = make_complementary_graph()
+
+    def constant_answer(text: str) -> str:
+        return "same"
+
+    result = select_path_by_validation(
+        graph,
+        make_complementary_examples(),
+        ComplementaryRouteLM(),
+        ExactMatchMetric(),
+        show_progress=False,
+        early_stop_patience=0,
+        return_top_k=3,
+        normalizer=constant_answer,
+    )
+
+    assert result.ensemble_val_score == pytest.approx(0.75)
 
 
 def test_ranked_paths_respects_candidate_cap():

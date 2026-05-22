@@ -278,6 +278,16 @@ class TestBuildGraphRich:
         for tid in g.terminal_ids:
             assert g.nodes[tid].type == FragmentType.OUTPUT_CONTRACT
 
+    def test_few_shot_branches_are_optional_when_enabled(self):
+        g = build_graph("gsm8k", topology="rich", include_few_shot=True)
+        path_types = [
+            [g.nodes[nid].type for nid in path]
+            for path in g.all_paths()
+        ]
+
+        assert any(FragmentType.FEW_SHOT in types for types in path_types)
+        assert any(FragmentType.FEW_SHOT not in types for types in path_types)
+
 
 # ---------------------------------------------------------------------------
 # build_graph — variant selection

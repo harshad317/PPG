@@ -234,16 +234,82 @@ class AnswerNormalizer(Protocol):
 def default_normalizer(text: str) -> str:
     """
     Best-effort normaliser for short-answer tasks (math, MC, QA).
-    Priority: extract last number > extract final answer span > strip
-    punctuation/case.
+    Priority: explicit final-answer span > multiple-choice label > last number
+    > strip punctuation/case.
     """
-    text = text.strip().lower()
+    text = text.strip()
+    if not text:
+        return ""
+
+    answer_span = _extract_final_answer_text(text)
+    if answer_span != text:
+        mc = _extract_multiple_choice_answer(answer_span)
+        if mc is not None:
+            return mc
+        numeric = _extract_numeric_answer(answer_span)
+        if numeric is not None:
+            return numeric
+        return _normalize_answer_text(answer_span)
+
+    mc = _extract_multiple_choice_answer(text)
+    if mc is not None:
+        return mc
+
     numeric = _extract_numeric_answer(text)
     if numeric is not None:
         return numeric
-    text = _extract_final_answer_text(text)
-    # fallback: strip non-alphanumeric boundaries
-    return re.sub(r"[^a-z0-9\s]", "", text).strip()
+    return _normalize_answer_text(text)
+
+
+def numeric_answer_normalizer(text: str) -> str:
+    """Normalize math-style answers by canonicalizing the final number."""
+    numeric = _extract_numeric_answer(text)
+    if numeric is not None:
+        return numeric
+    return span_answer_normalizer(text)
+
+
+def multiple_choice_normalizer(text: str) -> str:
+    """Normalize ARC/MMLU-style responses to a final answer label."""
+    answer = _extract_multiple_choice_answer(text)
+    if answer is not None:
+        return answer
+    return default_normalizer(text)
+
+
+def span_answer_normalizer(text: str) -> str:
+    """Normalize short QA spans without letting incidental numbers dominate."""
+    return _normalize_answer_text(_extract_final_answer_text(text))
+
+
+def _normalize_answer_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9\s]", "", text.strip().lower()).strip()
+
+
+_MC_EXPLICIT_RE = re.compile(
+    r"(?:final\s+answer|answer|option|choice|choose|select(?:ed)?)"
+    r"\s*(?:is|:)?\s*[\(\[]?([A-J]|[1-9])[\)\].:]?",
+    re.IGNORECASE,
+)
+_MC_LINE_RE = re.compile(r"^\s*[\(\[]?([A-J]|[1-9])[\)\].:]?\s*$", re.IGNORECASE)
+
+
+def _extract_multiple_choice_answer(text: str) -> str | None:
+    """Extract an explicit MCQ label without treating arbitrary letters as labels."""
+    text = text.strip()
+    if not text:
+        return None
+
+    explicit = _MC_EXPLICIT_RE.findall(text)
+    if explicit:
+        return explicit[-1].upper()
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines:
+        line_match = _MC_LINE_RE.match(lines[-1])
+        if line_match:
+            return line_match.group(1).upper()
+    return None
 
 
 def _extract_numeric_answer(text: str) -> str | None:

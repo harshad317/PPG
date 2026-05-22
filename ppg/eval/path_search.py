@@ -6,10 +6,10 @@ import statistics
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 from ppg.core.executor import LMClient, PromptAssembler
-from ppg.core.features import default_normalizer
+from ppg.core.features import AnswerNormalizer, default_normalizer
 from ppg.core.graph import PPGraph
 from ppg.core.tokenizer import count_tokens
 from ppg.eval.harness import EvalExample
@@ -46,6 +46,9 @@ class PathSearchResult:
 class _PathEvaluation:
     candidate: PathCandidate
     responses: list[str]
+
+
+PathRunner = Callable[[list[str], EvalExample], tuple[str, int]]
 
 
 def path_utility(graph: PPGraph, path: list[str]) -> float:
@@ -124,6 +127,8 @@ def select_path_by_validation(
     token_efficiency_weight: float = 0.02,
     max_tokens_ref: int = 2048,
     return_top_k: int = 1,
+    path_runner: Optional[PathRunner] = None,
+    normalizer: AnswerNormalizer = default_normalizer,
 ) -> PathSearchResult:
     """
     Select the complete graph path with highest overhead-adjusted validation score.
@@ -181,6 +186,7 @@ def select_path_by_validation(
             metric=metric,
             constraint_checker=constraint_checker,
             n_workers=n_workers,
+            path_runner=path_runner,
         )
         n_scored += 1
         candidate = PathSearchResult(
@@ -232,6 +238,7 @@ def select_path_by_validation(
         metric=metric,
         constraint_checker=constraint_checker,
         top_k=max(1, return_top_k),
+        normalizer=normalizer,
     )
     return best
 
@@ -245,6 +252,7 @@ def score_path(
     constraint_checker: Optional[ConstraintChecker] = None,
     *,
     n_workers: int = 1,
+    path_runner: Optional[PathRunner] = None,
 ) -> tuple[float, float]:
     """Return ``(mean_score, mean_prompt_tokens)`` for a fixed path."""
     score, mean_tokens, _responses = _score_path_detailed(
@@ -255,6 +263,7 @@ def score_path(
         metric=metric,
         constraint_checker=constraint_checker,
         n_workers=n_workers,
+        path_runner=path_runner,
     )
     return score, mean_tokens
 
@@ -268,15 +277,20 @@ def _score_path_detailed(
     constraint_checker: Optional[ConstraintChecker] = None,
     *,
     n_workers: int = 1,
+    path_runner: Optional[PathRunner] = None,
 ) -> tuple[float, float, list[str]]:
     """Return score, mean prompt tokens, and per-example responses."""
     asm = PromptAssembler(graph)
 
     def _run(ex: EvalExample) -> tuple[float, int, str]:
-        prompt = asm.assemble(path, {"input": ex.x})
-        response = lm.complete(prompt)
+        if path_runner is None:
+            prompt = asm.assemble(path, {"input": ex.x})
+            response = lm.complete(prompt)
+            tokens = count_tokens(prompt)
+        else:
+            response, tokens = path_runner(path, ex)
         score = _score_response(response, ex, metric, constraint_checker)
-        return score, count_tokens(prompt), response
+        return score, tokens, response
 
     if n_workers <= 1:
         out = [_run(ex) for ex in examples]
@@ -352,6 +366,7 @@ def _select_ensemble_candidates(
     metric: TaskMetric,
     constraint_checker: Optional[ConstraintChecker],
     top_k: int,
+    normalizer: AnswerNormalizer = default_normalizer,
 ) -> tuple[list[PathCandidate], float]:
     if not evaluations:
         return [], 0.0
@@ -380,6 +395,7 @@ def _select_ensemble_candidates(
             examples,
             metric,
             constraint_checker,
+            normalizer,
             best_selected,
             best_key,
         )
@@ -393,6 +409,7 @@ def _select_ensemble_candidates(
                     examples,
                     metric,
                     constraint_checker,
+                    normalizer,
                 )
                 c = ev.candidate
                 key = (
@@ -412,6 +429,7 @@ def _select_ensemble_candidates(
                 examples,
                 metric,
                 constraint_checker,
+                normalizer,
                 best_selected,
                 best_key,
             )
@@ -424,10 +442,11 @@ def _maybe_update_best_ensemble(
     examples: list[EvalExample],
     metric: TaskMetric,
     constraint_checker: Optional[ConstraintChecker],
+    normalizer: AnswerNormalizer,
     best_selected: list[_PathEvaluation],
     best_key: Optional[tuple[float, float, float, float, float]],
 ) -> tuple[list[_PathEvaluation], tuple[float, float, float, float, float]]:
-    score = _ensemble_score(selected, examples, metric, constraint_checker)
+    score = _ensemble_score(selected, examples, metric, constraint_checker, normalizer)
     total_tokens = sum(ev.candidate.mean_tokens for ev in selected)
     mean_adjusted = statistics.mean(ev.candidate.adjusted_score for ev in selected)
     mean_val = statistics.mean(ev.candidate.val_score for ev in selected)
@@ -448,21 +467,25 @@ def _ensemble_score(
     examples: list[EvalExample],
     metric: TaskMetric,
     constraint_checker: Optional[ConstraintChecker],
+    normalizer: AnswerNormalizer = default_normalizer,
 ) -> float:
     if not evaluations:
         return 0.0
     scores = []
     for i, ex in enumerate(examples):
         responses = [ev.responses[i] for ev in evaluations]
-        response = _select_majority_response(responses)
+        response = _select_majority_response(responses, normalizer)
         scores.append(_score_response(response, ex, metric, constraint_checker))
     return statistics.mean(scores) if scores else 0.0
 
 
-def _select_majority_response(responses: list[str]) -> str:
+def _select_majority_response(
+    responses: list[str],
+    normalizer: AnswerNormalizer = default_normalizer,
+) -> str:
     if not responses:
         return ""
-    normalized = [default_normalizer(response) for response in responses]
+    normalized = [normalizer(response) for response in responses]
     counts = Counter(normalized)
     best_answer, _count = counts.most_common(1)[0]
     for answer, response in zip(normalized, responses):

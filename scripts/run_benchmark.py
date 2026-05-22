@@ -361,6 +361,27 @@ def make_lm(
     return lm
 
 
+def normalizer_for_benchmark(benchmark: str):
+    """Return the answer normalizer used for production voting/calibration."""
+    from ppg.core.features import (
+        default_normalizer,
+        multiple_choice_normalizer,
+        numeric_answer_normalizer,
+        span_answer_normalizer,
+        verbatim_normalizer,
+    )
+
+    if benchmark in {"gsm8k", "livebench_math"}:
+        return numeric_answer_normalizer
+    if benchmark in {"arc_challenge", "mmlu"}:
+        return multiple_choice_normalizer
+    if benchmark == "mbpp":
+        return verbatim_normalizer
+    if benchmark in {"drop", "hotpotqa", "truthfulqa"}:
+        return span_answer_normalizer
+    return default_normalizer
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -416,14 +437,21 @@ def main():
                              "val_path = fixed best path from validation, "
                              "dynamic = greedy bandit routing per input, "
                              "none = no calibration (default: val_path)")
+    parser.add_argument("--ppg-calibration-execution", choices=["prompt", "deployment"],
+                        default="deployment", dest="ppg_calibration_execution",
+                        help="How validation path search scores each route: "
+                             "prompt = one raw completion, deployment = same "
+                             "executor sampling/escalation used at eval time "
+                             "(default: deployment)")
     parser.add_argument("--ppg-path-candidates", type=int, default=0,
                         dest="ppg_path_candidates",
                         help="Number of utility-ranked paths to validate for PPG; "
                              "0 searches all complete paths (default: 0)")
     parser.add_argument("--ppg-ensemble-paths", type=int, default=1,
                         dest="ppg_ensemble_paths",
-                        help="Deploy a majority-vote ensemble of the top N "
-                             "validation paths for PPG (default: 1)")
+                        help="Let validation deploy up to N majority-vote paths "
+                             "for PPG; tied ensembles shrink to the lowest-token "
+                             "size (default: 1)")
     parser.add_argument("--ppg-calibration-patience", type=int, default=None,
                         dest="ppg_calibration_patience",
                         help="Early-stop patience for validation path search; "
@@ -598,7 +626,11 @@ def main():
         _step_rule(2, 4, "Building PPG components...")
         policy    = LinUCBPolicy(graph)
 
-        feat_extractor = FeatureExtractor.production() if use_prod else FeatureExtractor()
+        answer_normalizer = normalizer_for_benchmark(bench)
+        feat_extractor = (
+            FeatureExtractor.production(normalizer=answer_normalizer)
+            if use_prod else FeatureExtractor(normalizer=answer_normalizer)
+        )
         exec_config    = ExecutorConfig.production() if use_prod else ExecutorConfig(escalation_enabled=False)
         if args.k_samples is not None:
             exec_config.k_samples = max(1, args.k_samples)
@@ -801,6 +833,12 @@ def main():
             if hasattr(_lm_inner, 'reset_stats'):
                 _lm_inner.reset_stats()
             t_cal = time.time()
+            path_runner = None
+            if args.ppg_calibration_execution == "deployment":
+                def path_runner(path, ex):
+                    trace = executor.execute_path(ex.x, path)
+                    return trace.lm_response, trace.token_count
+
             selected = select_path_by_validation(
                 graph=graph,
                 examples=val_ex,
@@ -812,16 +850,25 @@ def main():
                 show_progress=show_progress,
                 early_stop_patience=early_stop_patience,
                 return_top_k=max(1, args.ppg_ensemble_paths),
+                path_runner=path_runner,
+                normalizer=feat_extractor.normalizer,
             )
             ppg_calibration_calls = lm.reset()
             ppg_calibration_real_calls = (
                 _lm_inner.n_misses if hasattr(_lm_inner, 'n_misses')
                 else ppg_calibration_calls
             )
-            ppg_path = selected.path
             ppg_paths = [c.path for c in selected.candidates]
+            ppg_path = ppg_paths[0] if ppg_paths else selected.path
+            deployed_val_score = (
+                selected.ensemble_val_score
+                if selected.ensemble_val_score is not None
+                else selected.val_score
+            )
             ppg_calibration_info = {
-                "val_score":       round(selected.val_score, 4),
+                "execution":       args.ppg_calibration_execution,
+                "val_score":       round(deployed_val_score, 4),
+                "best_individual_val_score": round(selected.val_score, 4),
                 "mean_tokens":     round(selected.mean_tokens, 1),
                 "utility":         round(selected.utility, 4),
                 "ensemble_paths":  len(ppg_paths or []),
@@ -837,7 +884,7 @@ def main():
                 "time_s":          round(time.time() - t_cal, 1),
             }
             _info(
-                f"selected path val={selected.val_score:.4f}  "
+                f"selected path val={deployed_val_score:.4f}  "
                 f"avg_tok={selected.mean_tokens:.1f}  "
                 f"paths={selected.n_paths_scored}/{selected.total_paths}  "
                 f"ensemble={len(ppg_paths or [])}  "

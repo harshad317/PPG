@@ -283,6 +283,7 @@ Useful flags:
 | --- | --- |
 | `--few-shot` | Adds `FEW_SHOT` fragment variants to rich graphs |
 | `--ppg-calibration val_path` | Selects the best fixed route on the validation split; default |
+| `--ppg-calibration-execution deployment` | Scores calibration paths with the same executor sampling/escalation used at eval time |
 | `--ppg-calibration dynamic` | Uses greedy learned routing per test input |
 | `--ppg-path-candidates N` | Limits validation path search to the top `N` utility-ranked paths |
 | `--ppg-ensemble-paths N` | Lets validation deploy up to `N` majority-vote paths; tied ensembles shrink to the lowest-token size |
@@ -323,6 +324,7 @@ python scripts/run_suite.py \
   --profile standard \
   --model gpt-4.1-mini \
   --production \
+  --few-shot \
   --run-mipro \
   --run-gepa \
   --include-ppg \

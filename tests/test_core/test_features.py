@@ -10,6 +10,9 @@ from ppg.core import (
     RuntimeFeatures,
     FeatureExtractor,
     default_normalizer,
+    multiple_choice_normalizer,
+    numeric_answer_normalizer,
+    span_answer_normalizer,
     verbatim_normalizer,
 )
 from ppg.core.features import _consistency_features
@@ -53,6 +56,22 @@ class TestDefaultNormalizer:
     def test_empty_string(self):
         result = default_normalizer("")
         assert result == ""
+
+    def test_explicit_mc_answer_beats_reasoning_numbers(self):
+        result = default_normalizer("Step 1 mentions 1912.\nAnswer: C")
+        assert result == "C"
+
+    def test_multiple_choice_normalizer_extracts_final_label(self):
+        result = multiple_choice_normalizer("A is tempting, but the answer is D.")
+        assert result == "D"
+
+    def test_numeric_answer_normalizer_extracts_final_number(self):
+        result = numeric_answer_normalizer("We considered 3 values. Final answer: 1/2")
+        assert result == "0.5"
+
+    def test_span_answer_normalizer_ignores_incidental_numbers(self):
+        result = span_answer_normalizer("Sudan has more than 200 pyramids.")
+        assert result == "sudan has more than 200 pyramids"
 
 
 # ---------------------------------------------------------------------------
