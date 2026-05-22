@@ -365,13 +365,24 @@ def _select_ensemble_candidates(
         return [ranked[0].candidate], ranked[0].candidate.val_score
 
     best_selected: list[_PathEvaluation] = []
-    best_key: tuple[float, float, float, float] | None = None
+    best_key: tuple[float, float, float, float, float] | None = None
 
     # Try several high-quality seeds. The best individual path is not always
     # the best first voter because tie-breaking returns the first response.
+    # Track every prefix size and let validation choose the smallest ensemble
+    # that maximizes score. This avoids paying for extra paths when they only
+    # tie, or worse, dilute the best route.
     for seed in ranked[:min(10, len(ranked))]:
         selected = [seed]
         remaining = [ev for ev in ranked if ev is not seed]
+        best_selected, best_key = _maybe_update_best_ensemble(
+            selected,
+            examples,
+            metric,
+            constraint_checker,
+            best_selected,
+            best_key,
+        )
 
         while remaining and len(selected) < top_k:
             best_idx = 0
@@ -396,16 +407,40 @@ def _select_ensemble_candidates(
                     best_step_key = key
                     best_idx = i
             selected.append(remaining.pop(best_idx))
-
-        score = _ensemble_score(selected, examples, metric, constraint_checker)
-        mean_adjusted = statistics.mean(ev.candidate.adjusted_score for ev in selected)
-        mean_val = statistics.mean(ev.candidate.val_score for ev in selected)
-        key = (score, mean_adjusted, mean_val, selected[0].candidate.adjusted_score)
-        if best_key is None or key > best_key:
-            best_key = key
-            best_selected = selected
+            best_selected, best_key = _maybe_update_best_ensemble(
+                selected,
+                examples,
+                metric,
+                constraint_checker,
+                best_selected,
+                best_key,
+            )
 
     return [ev.candidate for ev in best_selected], best_key[0] if best_key else 0.0
+
+
+def _maybe_update_best_ensemble(
+    selected: list[_PathEvaluation],
+    examples: list[EvalExample],
+    metric: TaskMetric,
+    constraint_checker: Optional[ConstraintChecker],
+    best_selected: list[_PathEvaluation],
+    best_key: Optional[tuple[float, float, float, float, float]],
+) -> tuple[list[_PathEvaluation], tuple[float, float, float, float, float]]:
+    score = _ensemble_score(selected, examples, metric, constraint_checker)
+    total_tokens = sum(ev.candidate.mean_tokens for ev in selected)
+    mean_adjusted = statistics.mean(ev.candidate.adjusted_score for ev in selected)
+    mean_val = statistics.mean(ev.candidate.val_score for ev in selected)
+    key = (
+        score,
+        -total_tokens,
+        mean_adjusted,
+        mean_val,
+        selected[0].candidate.adjusted_score,
+    )
+    if best_key is None or key > best_key:
+        return list(selected), key
+    return best_selected, best_key
 
 
 def _ensemble_score(

@@ -127,7 +127,7 @@ def test_validation_search_can_override_utility_ranking():
     assert result.candidates[0].path == [tf, good, oc]
 
 
-def test_validation_search_returns_top_candidates():
+def test_validation_search_keeps_single_path_when_ensemble_does_not_improve():
     graph, ids = make_branching_graph()
     tf, bad, good, oc = ids
     lm = PromptAwareLM()
@@ -141,10 +141,9 @@ def test_validation_search_returns_top_candidates():
         return_top_k=2,
     )
 
-    assert [c.path for c in result.candidates] == [
-        [tf, good, oc],
-        [tf, bad, oc],
-    ]
+    assert result.candidates[0].path == [tf, good, oc]
+    assert len(result.candidates) == 1
+    assert result.ensemble_val_score == pytest.approx(1.0)
 
 
 def test_validation_search_scores_path_ensemble():
