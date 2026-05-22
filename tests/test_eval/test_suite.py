@@ -91,6 +91,26 @@ def test_summarize_records_computes_suite_rank_and_ppg_delta(tmp_path: Path):
     assert gepa["mean_delta_vs_ppg"] == pytest.approx(-0.015)
 
 
+def test_summarize_records_counts_score_ties_as_wins(tmp_path: Path):
+    result = write_result(
+        tmp_path / "mmlu.json",
+        "mmlu",
+        [row("ppg", 0.87), row("miprov2", 0.87), row("gepa", 0.86)],
+    )
+
+    summary = summarize_records([load_suite_record(result)])
+    ppg = next(m for m in summary["methods"] if m["name"] == "ppg")
+    miprov2 = next(m for m in summary["methods"] if m["name"] == "miprov2")
+    per_benchmark = summary["per_benchmark"][0]
+
+    assert ppg["wins"] == 1
+    assert miprov2["wins"] == 1
+    assert ppg["average_rank"] == pytest.approx(1.0)
+    assert miprov2["average_rank"] == pytest.approx(1.0)
+    assert per_benchmark["winner"] == "miprov2, ppg"
+    assert per_benchmark["winners"] == ["miprov2", "ppg"]
+
+
 def test_render_and_write_summary(tmp_path: Path):
     result = write_result(tmp_path / "gsm.json", "gsm8k", [row("ppg", 0.8), row("gepa", 0.7)])
     summary = summarize_records([load_suite_record(result)])

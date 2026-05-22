@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 
+TIE_TOLERANCE = 1e-9
+
+
 @dataclass(frozen=True)
 class SuiteRecord:
     """One benchmark result file loaded from ``run_benchmark.py`` output."""
@@ -210,7 +213,13 @@ def _summarize_benchmark(record: SuiteRecord) -> dict:
         for name, row in record.methods.items()
     }
     sorted_methods = sorted(method_scores, key=lambda name: (-method_scores[name], name))
-    ranks = {name: i + 1 for i, name in enumerate(sorted_methods)}
+    ranks = _competition_ranks(sorted_methods, method_scores)
+    best_score = method_scores[sorted_methods[0]] if sorted_methods else None
+    winners = [
+        name for name in sorted_methods
+        if best_score is not None
+        and abs(method_scores[name] - best_score) <= TIE_TOLERANCE
+    ]
     best_non_ppg_name = next((name for name in sorted_methods if name != "ppg"), None)
     ppg_score = method_scores.get("ppg")
     best_non_ppg_score = (
@@ -225,7 +234,8 @@ def _summarize_benchmark(record: SuiteRecord) -> dict:
     return {
         "benchmark": record.benchmark,
         "path": str(record.path),
-        "winner": sorted_methods[0] if sorted_methods else record.winner,
+        "winner": ", ".join(winners) if winners else record.winner,
+        "winners": winners,
         "scores": method_scores,
         "ranks": ranks,
         "mean_tokens": {
@@ -241,6 +251,22 @@ def _summarize_benchmark(record: SuiteRecord) -> dict:
         "best_non_ppg_score": best_non_ppg_score,
         "ppg_delta_vs_best_non_ppg": delta,
     }
+
+
+def _competition_ranks(sorted_methods: list[str], scores: dict[str, float]) -> dict[str, int]:
+    ranks: dict[str, int] = {}
+    previous_score: float | None = None
+    previous_rank = 0
+    for index, name in enumerate(sorted_methods, start=1):
+        score = scores[name]
+        if previous_score is not None and abs(score - previous_score) <= TIE_TOLERANCE:
+            rank = previous_rank
+        else:
+            rank = index
+        ranks[name] = rank
+        previous_score = score
+        previous_rank = rank
+    return ranks
 
 
 def _mean(values: Iterable[float | int | None]) -> float | None:
