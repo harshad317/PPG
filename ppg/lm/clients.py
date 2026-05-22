@@ -12,7 +12,7 @@ OpenAIClient / AnthropicClient
 
 DiskCachedLMClient
     Wraps any LMClient and caches responses to a JSON file on disk.
-    Key: SHA-256 of the prompt (hex). Thread-unsafe — single-process use only.
+    Key: SHA-256 of the prompt (hex).
     Good for: offline dev, replay experiments, API cost control.
 """
 
@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import random
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -279,8 +280,10 @@ class DiskCachedLMClient:
     On first complete(prompt) call, checks cache. Hit: returns stored
     response immediately. Miss: calls wrapped LM, stores result, returns.
 
-    Cache is loaded lazily on first use and written after every miss.
-    Thread-unsafe — single-process only.
+    Cache is loaded lazily on first use and written atomically after misses.
+    Thread-safe within one process. Concurrent processes can share the same
+    cache file for best-effort reuse, but last writer wins if they write at
+    the same time.
 
     Parameters
     ----------
@@ -404,11 +407,12 @@ class DiskCachedLMClient:
 
     def clear(self) -> None:
         """Remove all cached entries and delete the cache file."""
-        self._cache = {}
-        if os.path.exists(self._cache_path):
-            os.remove(self._cache_path)
-        self._n_hits = 0
-        self._n_misses = 0
+        with self._lock:
+            self._cache = {}
+            if os.path.exists(self._cache_path):
+                os.remove(self._cache_path)
+            self._n_hits = 0
+            self._n_misses = 0
 
     # ------------------------------------------------------------------
     # Internals
@@ -421,13 +425,58 @@ class DiskCachedLMClient:
     def _ensure_loaded(self) -> None:
         if self._cache is not None:
             return
-        if os.path.exists(self._cache_path):
+        with self._lock:
+            if self._cache is not None:
+                return
+            self._cache = self._load_cache()
+
+    def _load_cache(self) -> dict[str, str]:
+        if not os.path.exists(self._cache_path):
+            return {}
+
+        try:
             with open(self._cache_path, "r", encoding="utf-8") as f:
-                self._cache = json.load(f)
-        else:
-            self._cache = {}
+                data = json.load(f)
+        except (OSError, JSONDecodeError):
+            self._quarantine_cache_file()
+            return {}
+
+        if not isinstance(data, dict) or any(
+            not isinstance(k, str) or not isinstance(v, str)
+            for k, v in data.items()
+        ):
+            self._quarantine_cache_file()
+            return {}
+
+        return data
+
+    def _quarantine_cache_file(self) -> None:
+        if not os.path.exists(self._cache_path):
+            return
+        suffix = f".corrupt.{int(time.time() * 1000)}.{os.getpid()}"
+        try:
+            os.replace(self._cache_path, self._cache_path + suffix)
+        except OSError:
+            pass
 
     def _flush(self) -> None:
-        os.makedirs(os.path.dirname(os.path.abspath(self._cache_path)), exist_ok=True)
-        with open(self._cache_path, "w", encoding="utf-8") as f:
-            json.dump(self._cache, f, ensure_ascii=False, indent=None)
+        cache_dir = os.path.dirname(os.path.abspath(self._cache_path))
+        os.makedirs(cache_dir, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=os.path.basename(self._cache_path) + ".",
+            suffix=".tmp",
+            dir=cache_dir,
+            text=True,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self._cache, f, ensure_ascii=False, indent=None)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self._cache_path)
+        except Exception:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise

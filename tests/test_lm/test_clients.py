@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -486,6 +487,35 @@ class TestDiskCachedLMClientPersistence:
                 data = json.load(f)
             assert isinstance(data, dict)
             assert len(data) == 1
+
+    def test_corrupt_cache_file_is_quarantined(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = cache_path_in(d)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write('{"broken":')
+
+            cached = DiskCachedLMClient(FixedLM("fresh"), path)
+            assert cached.complete("prompt") == "fresh"
+
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            assert isinstance(data, dict)
+            assert len(data) == 1
+            assert any(name.startswith("cache.json.corrupt.") for name in os.listdir(d))
+
+    def test_parallel_first_use_keeps_cache_valid(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = cache_path_in(d)
+            cached = DiskCachedLMClient(FixedLM("ok"), path)
+
+            prompts = [f"prompt-{i}" for i in range(20)]
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                results = list(pool.map(cached.complete, prompts))
+
+            assert results == ["ok"] * len(prompts)
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            assert len(data) == len(prompts)
 
     def test_cache_survives_across_instances(self):
         with tempfile.TemporaryDirectory() as d:
