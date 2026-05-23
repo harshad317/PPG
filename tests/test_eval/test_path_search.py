@@ -6,7 +6,12 @@ import pytest
 
 from ppg.core import FragmentType, PPGraphBuilder
 from ppg.eval.harness import EvalExample
-from ppg.eval.path_search import ranked_paths, score_path, select_path_by_validation
+from ppg.eval.path_search import (
+    effective_majority_ensemble_size,
+    ranked_paths,
+    score_path,
+    select_path_by_validation,
+)
 from ppg.training.reward import ExactMatchMetric
 
 
@@ -165,6 +170,24 @@ def test_validation_search_scores_path_ensemble():
     )
 
     assert result.val_score == pytest.approx(0.75)
+    assert result.ensemble_val_score == pytest.approx(1.0)
+    assert len(result.candidates) == 3
+
+
+def test_validation_search_rounds_even_ensemble_budget_to_majority_size():
+    graph, _ids = make_complementary_graph()
+
+    result = select_path_by_validation(
+        graph,
+        make_complementary_examples(),
+        ComplementaryRouteLM(),
+        ExactMatchMetric(),
+        show_progress=False,
+        early_stop_patience=0,
+        return_top_k=2,
+    )
+
+    assert effective_majority_ensemble_size(2) == 3
     assert result.ensemble_val_score == pytest.approx(1.0)
     assert len(result.candidates) == 3
 

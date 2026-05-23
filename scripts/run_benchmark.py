@@ -451,7 +451,8 @@ def main():
                         dest="ppg_ensemble_paths",
                         help="Let validation deploy up to N majority-vote paths "
                              "for PPG; tied ensembles shrink to the lowest-token "
-                             "size (default: 1)")
+                             "size; even values >1 are rounded up to the next "
+                             "odd value (default: 1)")
     parser.add_argument("--ppg-calibration-patience", type=int, default=None,
                         dest="ppg_calibration_patience",
                         help="Early-stop patience for validation path search; "
@@ -512,6 +513,9 @@ def main():
     parser.add_argument("--ppg-reflection-model", default=None, dest="ppg_reflection_model",
                         help="LM for PPG reflection/evolution (default: same as --model)")
     args = parser.parse_args()
+    requested_ppg_ensemble_paths = args.ppg_ensemble_paths
+    from ppg.eval.path_search import effective_majority_ensemble_size
+    args.ppg_ensemble_paths = effective_majority_ensemble_size(args.ppg_ensemble_paths)
 
     show_progress = not args.quiet
     cache_dir     = None if args.no_cache else args.cache_dir
@@ -542,6 +546,12 @@ def main():
             print(f"[{n}/{total}] {label}")
         def _info(text: str) -> None:
             print(f"      {text}")
+
+    if args.ppg_ensemble_paths != requested_ppg_ensemble_paths:
+        _info(
+            f"ppg ensemble paths rounded from {requested_ppg_ensemble_paths} "
+            f"to {args.ppg_ensemble_paths} for majority voting"
+        )
 
     _header(f"PPG Benchmark: {bench}  |  model: {args.model}")
 

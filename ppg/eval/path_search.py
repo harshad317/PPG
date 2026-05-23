@@ -51,6 +51,21 @@ class _PathEvaluation:
 PathRunner = Callable[[list[str], EvalExample], tuple[str, int]]
 
 
+def effective_majority_ensemble_size(top_k: int) -> int:
+    """
+    Return a usable majority-vote ensemble size.
+
+    Even-size majority ensembles tie whenever the voters disagree; this makes
+    two-path deployments collapse to the first path in common cases. Keep
+    singleton deployments unchanged, and round larger even budgets up to the
+    next odd number so validation can test a real majority.
+    """
+    top_k = max(1, top_k)
+    if top_k > 1 and top_k % 2 == 0:
+        return top_k + 1
+    return top_k
+
+
 def path_utility(graph: PPGraph, path: list[str]) -> float:
     """Sum learned fragment utilities for deterministic pre-ranking."""
     return sum(graph.nodes[nid].utility for nid in path)
@@ -237,7 +252,7 @@ def select_path_by_validation(
         examples=examples,
         metric=metric,
         constraint_checker=constraint_checker,
-        top_k=max(1, return_top_k),
+        top_k=effective_majority_ensemble_size(return_top_k),
         normalizer=normalizer,
     )
     return best

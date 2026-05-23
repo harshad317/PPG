@@ -173,6 +173,49 @@ def test_run_suite_build_command_includes_suite_controls():
     assert cmd[cmd.index("--ppg-calibration-execution") + 1] == "deployment"
 
 
+def test_run_suite_rounds_even_ppg_ensemble_paths_to_majority_size():
+    module = _load_run_suite_module()
+    args = argparse.Namespace(
+        profile="standard",
+        provider="openai",
+        model="gpt-4.1-mini",
+        reflection_model="gpt-4o",
+        mmlu_subject="all",
+        production=True,
+        few_shot=False,
+        run_mipro=False,
+        run_gepa=False,
+        include_ppg=False,
+        no_cache=False,
+        cache_dir=".lm_cache",
+        output_dir="results_suite",
+        log_root="ppg_logs/suite",
+        workers=8,
+        temperature=0.0,
+        sample_temperature=0.8,
+        k_samples=5,
+        timeout=90.0,
+        max_retries=6,
+        parse_retries=5,
+        seed=0,
+        train_n=None,
+        val_n=None,
+        test_n=None,
+        warmup=None,
+        train_ep=None,
+        finetune=None,
+        ppg_path_candidates=40,
+        ppg_ensemble_paths=2,
+        ppg_calibration_patience=0,
+        ppg_calibration_execution="deployment",
+        diagnostic_report=False,
+    )
+
+    cmd = module.build_command(args, "gsm8k", Path("/repo"))
+
+    assert cmd[cmd.index("--ppg-ensemble-paths") + 1] == "3"
+
+
 def _load_run_suite_module():
     path = Path(__file__).resolve().parents[2] / "scripts" / "run_suite.py"
     spec = importlib.util.spec_from_file_location("run_suite_module", path)

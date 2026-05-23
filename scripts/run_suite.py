@@ -20,6 +20,7 @@ from ppg.eval.suite import (  # noqa: E402
     summarize_records,
     write_summary_files,
 )
+from ppg.eval.path_search import effective_majority_ensemble_size  # noqa: E402
 
 
 DEFAULT_BENCHMARKS = (
@@ -106,7 +107,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-ep", type=int, default=None)
     parser.add_argument("--finetune", type=int, default=None)
     parser.add_argument("--ppg-path-candidates", type=int, default=None)
-    parser.add_argument("--ppg-ensemble-paths", type=int, default=None)
+    parser.add_argument("--ppg-ensemble-paths", type=int, default=None,
+                        help="Maximum PPG majority-vote paths. Even values >1 "
+                             "are rounded up to the next odd value.")
     parser.add_argument("--ppg-calibration-patience", type=int, default=0)
     parser.add_argument("--ppg-calibration-execution",
                         choices=["prompt", "deployment"], default="deployment",
@@ -128,6 +131,13 @@ def main() -> int:
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[1]
     benchmarks = _parse_csv(args.benchmarks)
+    if args.ppg_ensemble_paths is not None:
+        normalized = _normalize_ensemble_paths(args.ppg_ensemble_paths)
+        if normalized != args.ppg_ensemble_paths:
+            print(
+                f"[suite] --ppg-ensemble-paths {args.ppg_ensemble_paths} "
+                f"rounded to {normalized} for majority voting"
+            )
 
     if not args.summarize_only:
         for benchmark in benchmarks:
@@ -229,7 +239,12 @@ def _budget(args: argparse.Namespace) -> dict[str, int]:
     for key, value in overrides.items():
         if value is not None:
             budget[key] = value
+    budget["ppg_ensemble_paths"] = _normalize_ensemble_paths(budget["ppg_ensemble_paths"])
     return budget
+
+
+def _normalize_ensemble_paths(value: int) -> int:
+    return effective_majority_ensemble_size(value)
 
 
 def _parse_csv(value: str) -> list[str]:
