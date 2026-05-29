@@ -144,6 +144,8 @@ def select_path_by_validation(
     return_top_k: int = 1,
     path_runner: Optional[PathRunner] = None,
     normalizer: AnswerNormalizer = default_normalizer,
+    racing_subset: int = 0,
+    racing_survivors: int = 0,
 ) -> PathSearchResult:
     """
     Select the complete graph path with highest overhead-adjusted validation score.
@@ -173,6 +175,29 @@ def select_path_by_validation(
     paths = ranked_paths(graph, max_candidates=effective_max)
     if not paths:
         raise ValueError("graph has no complete paths")
+
+    # Successive-halving (racing): cheaply pre-filter candidates on a small
+    # validation subset, then only full-score the survivors. The final winner is
+    # still validated on the full set below, so quality is preserved; only
+    # clearly-dominated paths are dropped early. Saves calls when there are many
+    # candidate paths and the full val split is large.
+    if (
+        racing_subset > 0
+        and racing_survivors > 0
+        and len(paths) > racing_survivors
+        and racing_subset < len(examples)
+    ):
+        paths = _race_paths(
+            graph=graph,
+            paths=paths,
+            subset=examples[:racing_subset],
+            lm=lm,
+            metric=metric,
+            constraint_checker=constraint_checker,
+            n_workers=n_workers,
+            path_runner=path_runner,
+            survivors=racing_survivors,
+        )
 
     input_tokens = _estimate_input_tokens(examples)
 
@@ -256,6 +281,38 @@ def select_path_by_validation(
         normalizer=normalizer,
     )
     return best
+
+
+def _race_paths(
+    graph: PPGraph,
+    paths: list[list[str]],
+    subset: list[EvalExample],
+    lm: LMClient,
+    metric: TaskMetric,
+    constraint_checker: Optional[ConstraintChecker],
+    n_workers: int,
+    path_runner: Optional[PathRunner],
+    survivors: int,
+) -> list[list[str]]:
+    """
+    Score every path on a small subset, return the top ``survivors`` paths.
+
+    Ranking mirrors the main loop's preferences: higher subset score first,
+    then higher learned utility, then fewer nodes (cheaper). Original candidate
+    order is preserved among the survivors so downstream early-stopping behaves
+    the same as without racing.
+    """
+    scored: list[tuple[float, float, int, int, list[str]]] = []
+    for order, path in enumerate(paths):
+        score, _mean_tokens = score_path(
+            graph, path, subset, lm, metric, constraint_checker,
+            n_workers=n_workers, path_runner=path_runner,
+        )
+        scored.append((score, path_utility(graph, path), -len(path), order, path))
+
+    scored.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+    survivor_set = {id(t[4]) for t in scored[:survivors]}
+    return [p for p in paths if id(p) in survivor_set]
 
 
 def score_path(

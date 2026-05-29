@@ -214,6 +214,16 @@ class ExecutorConfig:
     sample_aggregation:   str   = "first" # "first" or "majority" over normalized answers
     escalation_template:  str   = ""      # fallback escalation text when graph has no node
 
+    # Adaptive (early-exit) self-consistency. When True and k_samples>1, samples
+    # are drawn incrementally and sampling stops as soon as the majority answer
+    # is statistically settled — at least adaptive_min_samples drawn, and either
+    # the current lead cannot be overturned by the remaining budget, or the top
+    # answer already holds >= adaptive_confidence of the votes. Easy inputs cost
+    # 1-2 calls; only genuinely ambiguous ones use the full k_samples budget.
+    adaptive_sampling:    bool  = False
+    adaptive_min_samples: int   = 1
+    adaptive_confidence:  float = 0.7
+
     @classmethod
     def production(cls) -> "ExecutorConfig":
         """Tuned config for maximum benchmark performance.
@@ -227,6 +237,9 @@ class ExecutorConfig:
             escalation_threshold=0.3,
             structured_prompts=True,
             sample_aggregation="majority",
+            adaptive_sampling=True,
+            adaptive_min_samples=2,
+            adaptive_confidence=0.7,
             escalation_template=(
                 "The sampled answers disagreed:\n{candidate_answers}\n\n"
                 "Re-solve the task carefully, check the most likely failure point, "
@@ -350,7 +363,10 @@ class PPGExecutor:
         token_count = self._count_tokens(prompt)
 
         n_samples = self.cfg.k_samples if self.cfg.escalation_enabled and self.cfg.k_samples > 1 else 1
-        samples = self._complete_many(prompt, n_samples)
+        if n_samples > 1 and self.cfg.adaptive_sampling:
+            samples = self._complete_adaptive(prompt, n_samples)
+        else:
+            samples = self._complete_many(prompt, n_samples)
         response = self._select_response(samples)
 
         post_phi: Optional[RuntimeFeatures] = None
@@ -503,6 +519,39 @@ class PPGExecutor:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _complete_adaptive(self, prompt: str, k_max: int) -> list[str]:
+        """
+        Draw up to k_max samples one at a time, stopping early once the majority
+        answer is settled. Saves calls on easy inputs while preserving the full
+        budget for genuinely ambiguous ones.
+
+        Stop after at least adaptive_min_samples when either:
+          - the top answer's lead exceeds the number of samples still to draw
+            (no remaining draw can change the winner), or
+          - the top answer already holds >= adaptive_confidence of the votes.
+        """
+        normalizer = getattr(self.fx, "normalizer", None)
+        # A single draw is trivially "unanimous", so the confidence rule needs at
+        # least 2 votes to be meaningful — floor the minimum at 2.
+        min_samples = max(2, min(max(self.cfg.adaptive_min_samples, 2), k_max))
+
+        samples: list[str] = []
+        for drawn in range(k_max):
+            samples.append(self.lm.complete(prompt))
+            n = len(samples)
+            if n < min_samples or n >= k_max:
+                continue
+            if normalizer is None:
+                continue
+            counts = Counter(normalizer(s) for s in samples)
+            ordered = counts.most_common()
+            top = ordered[0][1]
+            second = ordered[1][1] if len(ordered) > 1 else 0
+            remaining = k_max - n
+            if (top - second) > remaining or (top / n) >= self.cfg.adaptive_confidence:
+                break
+        return samples
 
     def _complete_many(self, prompt: str, n: int) -> list[str]:
         """Return n completions, using LM-native sampling when available."""

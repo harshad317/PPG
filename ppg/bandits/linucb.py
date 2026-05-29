@@ -247,6 +247,32 @@ class LinUCBPolicy:
                 self.update(edge, phi, advantage)
 
     # ------------------------------------------------------------------
+    # Uncertainty (used to gate adaptive GRPO sampling)
+    # ------------------------------------------------------------------
+
+    def path_uncertainty(
+        self,
+        edges: list[tuple[str, str]],
+        phi:   np.ndarray,
+    ) -> float:
+        """
+        Mean LinUCB uncertainty sqrt(phi^T A^{-1} phi) over a path's edge arms.
+
+        High when the arms on this path are under-explored for the current
+        feature vector, low once their reward estimates have stabilised.
+        Returns 0.0 for an empty path. Used by the trainer to spend extra GRPO
+        samples only where the comparative signal is still valuable.
+        """
+        if not edges:
+            return 0.0
+        total = 0.0
+        for edge in edges:
+            arm = self._get_or_create(*edge)
+            A_inv_phi = np.linalg.solve(arm.A, phi)
+            total += float(np.sqrt(max(0.0, float(phi @ A_inv_phi))))
+        return total / len(edges)
+
+    # ------------------------------------------------------------------
     # Diagnostics
     # ------------------------------------------------------------------
 

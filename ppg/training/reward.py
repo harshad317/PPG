@@ -704,9 +704,15 @@ class RewardComputer:
         constraint_checker: Optional[ConstraintChecker] = None,
         perturb_buffer:     Optional[PerturbationBuffer] = None,
         config:             Optional[RewardConfig] = None,
+        aux_lm:             Optional[LMClient] = None,
     ):
+        # Perturbation-variance only needs a *relative* robustness signal, not
+        # the SOTA model's absolute answer. When aux_lm is provided, the cheaper
+        # model runs the perturbation rollouts; the main response (already in the
+        # trace) stays on the SOTA model. Falls back to lm when aux_lm is None.
         self.metric     = task_metric
         self.lm         = lm
+        self.aux_lm     = aux_lm or lm
         self.assembler  = assembler
         self.checker    = constraint_checker
         self.buffer     = perturb_buffer or PerturbationBuffer(m=2)
@@ -811,22 +817,29 @@ class RewardComputer:
 
         node_ids = trace.node_ids
         assembler = self.assembler
-        lm = self.lm
+        lm = self.aux_lm
 
         use_constraint_as_task = self.cfg.constraint_as_task or (
             self.checker is not None and constraints and self._is_constraint_primary(constraints)
         )
 
-        def _score(x_p: str) -> float:
-            prompt_p = assembler.assemble(node_ids, {"input": x_p})
-            y_p      = lm.complete(prompt_p)
+        def _score_response(y_p: str) -> float:
             if use_constraint_as_task and self.checker is not None:
                 return self.checker.check(y_p, constraints or [], metadata)
             return self.metric.score(y_p, y_star)
 
-        with ThreadPoolExecutor(max_workers=len(perturbed_inputs)) as pool:
-            scores = list(pool.map(_score, perturbed_inputs))
+        prompts = [assembler.assemble(node_ids, {"input": x_p}) for x_p in perturbed_inputs]
 
+        # Prefer a native batch path (e.g. provider Batch API at -50%) for the
+        # perturbation rollouts; otherwise fire them concurrently as before.
+        batcher = getattr(lm, "complete_batch", None)
+        if callable(batcher):
+            responses = list(batcher(prompts))
+        else:
+            with ThreadPoolExecutor(max_workers=len(prompts)) as pool:
+                responses = list(pool.map(lm.complete, prompts))
+
+        scores = [_score_response(y_p) for y_p in responses]
         var = float(np.var(scores))
         return -self.cfg.lambda_variance * var
 

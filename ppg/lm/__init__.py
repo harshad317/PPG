@@ -5,6 +5,9 @@ from .clients import (
     AnthropicClient,
     CountingLMClient,
     DiskCachedLMClient,
+    MemoizingLMClient,
+    BatchLMClient,
+    OpenAIBatchClient,
 )
 
 __all__ = [
@@ -14,4 +17,7 @@ __all__ = [
     "AnthropicClient",
     "CountingLMClient",
     "DiskCachedLMClient",
+    "MemoizingLMClient",
+    "BatchLMClient",
+    "OpenAIBatchClient",
 ]

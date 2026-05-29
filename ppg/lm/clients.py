@@ -44,6 +44,12 @@ class OpenAIConfig:
     parse_retries:      int             = 2
     system_msg:         str             = "You are a helpful assistant."
     sample_temperature: Optional[float] = None
+    # OpenAI applies automatic prompt caching to shared prefixes >= 1024 tokens
+    # at no cost to enable. The flag is a no-op marker kept for symmetry with
+    # AnthropicConfig and to document intent; assemble static fragments first so
+    # the shared prefix is long and identical across GRPO / self-consistency /
+    # LOO / perturbation calls.
+    enable_prompt_cache: bool           = False
 
 
 @dataclass
@@ -56,6 +62,11 @@ class AnthropicConfig:
     parse_retries:      int             = 2
     system_msg:         str             = "You are a helpful assistant."
     sample_temperature: Optional[float] = None
+    # When True, the (static) system block is sent with cache_control:ephemeral
+    # so Anthropic caches it across calls. Maximise the win by moving stable
+    # fragment text into system_msg; the per-example input stays in the user
+    # message and is never cached.
+    enable_prompt_cache: bool           = False
 
 
 # ---------------------------------------------------------------------------
@@ -189,13 +200,23 @@ class AnthropicClient:
             max_retries=self.cfg.max_retries,
         )
 
+    def _system_param(self):
+        """Return the system argument, cached when enable_prompt_cache is set."""
+        if self.cfg.enable_prompt_cache:
+            return [{
+                "type": "text",
+                "text": self.cfg.system_msg,
+                "cache_control": {"type": "ephemeral"},
+            }]
+        return self.cfg.system_msg
+
     def complete(self, prompt: str) -> str:
         message = _retry_parse_errors(
             lambda: self._client.messages.create(
                 model=self.cfg.model,
                 temperature=self.cfg.temperature,
                 max_tokens=self.cfg.max_tokens,
-                system=self.cfg.system_msg,
+                system=self._system_param(),
                 messages=[{"role": "user", "content": prompt}],
             ),
             retries=self.cfg.parse_retries,
@@ -218,7 +239,7 @@ class AnthropicClient:
                     model=self.cfg.model,
                     temperature=temperature,
                     max_tokens=self.cfg.max_tokens,
-                    system=self.cfg.system_msg,
+                    system=self._system_param(),
                     messages=[{"role": "user", "content": prompt}],
                 ),
                 retries=self.cfg.parse_retries,
@@ -259,6 +280,15 @@ class CountingLMClient:
         if callable(sampler):
             return list(sampler(prompt, n))
         return [self._lm.complete(prompt) for _ in range(n)]
+
+    def complete_batch(self, prompts: list[str]) -> list[str]:
+        """Count one call per prompt and delegate to a native batch path if present."""
+        with self._lock:
+            self._count += len(prompts)
+        batcher = getattr(self._lm, "complete_batch", None)
+        if callable(batcher):
+            return list(batcher(prompts))
+        return [self._lm.complete(p) for p in prompts]
 
     @property
     def call_count(self) -> int:
@@ -328,6 +358,58 @@ class DiskCachedLMClient:
                 self._n_hits += 1  # concurrent hit
 
         return response
+
+    def complete_batch(self, prompts: list[str]) -> list[str]:
+        """
+        Cache-aware batch completion.
+
+        Returns cached responses immediately; only cache-missing prompts are
+        forwarded — to the wrapped client's native complete_batch when available
+        (e.g. a provider Batch API at -50%), otherwise one complete() each.
+        Deduplicates identical missing prompts so a batch never pays twice.
+        """
+        if not prompts:
+            return []
+        self._ensure_loaded()
+
+        results: list[Optional[str]] = [None] * len(prompts)
+        keys = [self._hash(p) for p in prompts]
+
+        # First pass: serve hits, collect unique misses.
+        unique_missing: dict[str, str] = {}   # key -> prompt
+        with self._lock:
+            for i, key in enumerate(keys):
+                if key in self._cache:
+                    self._n_hits += 1
+                    results[i] = self._cache[key]
+                elif key not in unique_missing:
+                    unique_missing[key] = prompts[i]
+
+        if unique_missing:
+            miss_keys = list(unique_missing.keys())
+            miss_prompts = [unique_missing[k] for k in miss_keys]
+            batcher = getattr(self._lm, "complete_batch", None)
+            if callable(batcher):
+                fresh = list(batcher(miss_prompts))
+            else:
+                fresh = [self._lm.complete(p) for p in miss_prompts]
+
+            with self._lock:
+                for key, response in zip(miss_keys, fresh):
+                    if key not in self._cache:
+                        self._cache[key] = response
+                        self._n_misses += 1
+                    else:
+                        self._n_hits += 1
+                self._flush()
+
+        # Second pass: fill every position (including duplicate misses) from cache.
+        with self._lock:
+            for i, key in enumerate(keys):
+                if results[i] is None:
+                    results[i] = self._cache.get(key, "")
+
+        return [r or "" for r in results]
 
     def sample(self, prompt: str, n: int) -> list[str]:
         """
@@ -480,3 +562,240 @@ class DiskCachedLMClient:
             except OSError:
                 pass
             raise
+
+
+class MemoizingLMClient:
+    """
+    In-memory deduplication of deterministic complete() calls.
+
+    GRPO path sampling, LOO ablation, and perturbation-variance frequently
+    re-assemble identical prompts within and across episodes. At temperature 0
+    those calls are deterministic, so an in-process memo collapses the repeats
+    to one real call — the same dedup the disk cache gives, but without disk and
+    available when caching is otherwise off.
+
+    Only complete()/complete_batch() are memoized. sample() passes through
+    untouched because self-consistency relies on independent stochastic draws.
+    Bounded by max_size with simple FIFO eviction.
+    """
+
+    def __init__(self, lm, max_size: int = 50_000):
+        self._lm = lm
+        self._max_size = max_size
+        self._memo: dict[str, str] = {}
+        self._order: list[str] = []
+        self._lock = threading.Lock()
+
+    def _get(self, key: str) -> Optional[str]:
+        with self._lock:
+            return self._memo.get(key)
+
+    def _put(self, key: str, value: str) -> None:
+        with self._lock:
+            if key in self._memo:
+                return
+            if len(self._memo) >= self._max_size and self._order:
+                self._memo.pop(self._order.pop(0), None)
+            self._memo[key] = value
+            self._order.append(key)
+
+    def complete(self, prompt: str) -> str:
+        key = hashlib.sha256(prompt.encode()).hexdigest()
+        hit = self._get(key)
+        if hit is not None:
+            return hit
+        response = self._lm.complete(prompt)
+        self._put(key, response)
+        return response
+
+    def sample(self, prompt: str, n: int) -> list[str]:
+        sampler = getattr(self._lm, "sample", None)
+        if callable(sampler):
+            return list(sampler(prompt, n))
+        return [self._lm.complete(prompt) for _ in range(n)]
+
+    def complete_batch(self, prompts: list[str]) -> list[str]:
+        if not prompts:
+            return []
+        keys = [hashlib.sha256(p.encode()).hexdigest() for p in prompts]
+        results: list[Optional[str]] = [self._get(k) for k in keys]
+
+        missing_idx = [i for i, r in enumerate(results) if r is None]
+        if missing_idx:
+            # Deduplicate identical missing prompts before forwarding.
+            uniq: dict[str, str] = {}
+            for i in missing_idx:
+                uniq.setdefault(keys[i], prompts[i])
+            uniq_keys = list(uniq.keys())
+            batcher = getattr(self._lm, "complete_batch", None)
+            if callable(batcher):
+                fresh = list(batcher([uniq[k] for k in uniq_keys]))
+            else:
+                fresh = [self._lm.complete(uniq[k]) for k in uniq_keys]
+            for k, v in zip(uniq_keys, fresh):
+                self._put(k, v)
+            for i in missing_idx:
+                results[i] = self._get(keys[i]) or ""
+
+        return [r or "" for r in results]
+
+
+# ---------------------------------------------------------------------------
+# Batch clients — route offline (non-interactive) calls at provider -50% rates
+# ---------------------------------------------------------------------------
+
+class BatchLMClient:
+    """
+    Adds a ``complete_batch(prompts) -> responses`` method to any LMClient.
+
+    Training, calibration, and offline eval are throughput-bound, not latency
+    bound, so many prompts are known at once (GRPO's k paths, self-consistency,
+    LOO ablations, per-example path scoring). This wrapper exposes a single
+    batch entry point:
+
+      * if the wrapped client has its own ``complete_batch`` (e.g. a provider
+        Batch API at -50%), it is used directly;
+      * otherwise prompts are completed concurrently via a thread pool (same
+        price, but parallel — a safe default that keeps behaviour identical).
+
+    ``complete`` and ``sample`` pass straight through so the wrapper still
+    satisfies the LMClient protocol everywhere a single call is expected.
+    """
+
+    def __init__(self, lm, max_workers: int = 8):
+        self._lm = lm
+        self._max_workers = max(1, max_workers)
+
+    def complete(self, prompt: str) -> str:
+        return self._lm.complete(prompt)
+
+    def sample(self, prompt: str, n: int) -> list[str]:
+        sampler = getattr(self._lm, "sample", None)
+        if callable(sampler):
+            return list(sampler(prompt, n))
+        return [self._lm.complete(prompt) for _ in range(n)]
+
+    def complete_batch(self, prompts: list[str]) -> list[str]:
+        if not prompts:
+            return []
+        batcher = getattr(self._lm, "complete_batch", None)
+        if callable(batcher):
+            return list(batcher(prompts))
+        if len(prompts) == 1 or self._max_workers == 1:
+            return [self._lm.complete(p) for p in prompts]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(self._max_workers, len(prompts))) as pool:
+            return list(pool.map(self._lm.complete, prompts))
+
+
+class OpenAIBatchClient:
+    """
+    OpenAI Batch API client — submits prompts as a batch job billed at -50%.
+
+    ``complete_batch`` uploads a JSONL of chat-completion requests, creates a
+    batch against ``/v1/chat/completions``, blocks until the job finishes
+    (polling every ``poll_interval`` seconds up to ``max_wait`` seconds), then
+    returns responses in the original prompt order. Use only for offline work
+    where a few minutes of latency is acceptable.
+
+    ``complete`` falls back to a normal synchronous chat call so the object also
+    satisfies the single-call LMClient protocol (e.g. for interactive eval).
+    """
+
+    def __init__(
+        self,
+        config:        Optional[OpenAIConfig] = None,
+        api_key:       Optional[str] = None,
+        poll_interval: float = 5.0,
+        max_wait:      float = 24 * 3600.0,
+        completion_window: str = "24h",
+    ):
+        try:
+            import openai
+        except ImportError:
+            raise ImportError("openai package required: pip install openai") from None
+
+        self.cfg = config or OpenAIConfig()
+        self._client = openai.OpenAI(
+            api_key=api_key or os.environ.get("OPENAI_API_KEY"),
+            timeout=self.cfg.timeout,
+            max_retries=self.cfg.max_retries,
+        )
+        self.poll_interval = poll_interval
+        self.max_wait = max_wait
+        self.completion_window = completion_window
+        self._sync = OpenAIClient(config=self.cfg, api_key=api_key)
+
+    def complete(self, prompt: str) -> str:
+        return self._sync.complete(prompt)
+
+    def sample(self, prompt: str, n: int) -> list[str]:
+        return self._sync.sample(prompt, n)
+
+    def _body(self, prompt: str) -> dict:
+        return {
+            "model": self.cfg.model,
+            "temperature": self.cfg.temperature,
+            "max_tokens": self.cfg.max_tokens,
+            "messages": [
+                {"role": "system", "content": self.cfg.system_msg},
+                {"role": "user", "content": prompt},
+            ],
+        }
+
+    def complete_batch(self, prompts: list[str]) -> list[str]:
+        if not prompts:
+            return []
+        if len(prompts) == 1:
+            return [self.complete(prompts[0])]
+
+        import io
+
+        lines = []
+        for i, prompt in enumerate(prompts):
+            lines.append(json.dumps({
+                "custom_id": f"req-{i}",
+                "method": "POST",
+                "url": "/v1/chat/completions",
+                "body": self._body(prompt),
+            }))
+        payload = ("\n".join(lines) + "\n").encode("utf-8")
+
+        upload = self._client.files.create(
+            file=io.BytesIO(payload), purpose="batch",
+        )
+        batch = self._client.batches.create(
+            input_file_id=upload.id,
+            endpoint="/v1/chat/completions",
+            completion_window=self.completion_window,
+        )
+
+        waited = 0.0
+        status = batch
+        while status.status not in ("completed", "failed", "expired", "cancelled"):
+            if waited >= self.max_wait:
+                raise TimeoutError(
+                    f"OpenAI batch {batch.id} not done after {self.max_wait}s "
+                    f"(status={status.status})"
+                )
+            time.sleep(self.poll_interval)
+            waited += self.poll_interval
+            status = self._client.batches.retrieve(batch.id)
+
+        if status.status != "completed" or not status.output_file_id:
+            raise RuntimeError(f"OpenAI batch {batch.id} ended as {status.status}")
+
+        content = self._client.files.content(status.output_file_id).text
+        by_id: dict[str, str] = {}
+        for raw in content.splitlines():
+            if not raw.strip():
+                continue
+            row = json.loads(raw)
+            cid = row.get("custom_id", "")
+            try:
+                text = row["response"]["body"]["choices"][0]["message"]["content"] or ""
+            except (KeyError, IndexError, TypeError):
+                text = ""
+            by_id[cid] = text
+
+        return [by_id.get(f"req-{i}", "") for i in range(len(prompts))]

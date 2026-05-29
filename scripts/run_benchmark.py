@@ -286,6 +286,52 @@ def best_utility_path(graph) -> list[str]:
     return path
 
 
+def parse_portfolio_candidates(value: str) -> list[str]:
+    """Parse comma-separated deployment candidates for validation gating."""
+    names = [part.strip() for part in value.split(",") if part.strip()]
+    if not names:
+        raise ValueError("--portfolio-candidates must contain at least one method")
+    allowed = {"ppg", "base_model", "flat_all", "static_best", "highest_utility"}
+    unknown = sorted(set(names) - allowed)
+    if unknown:
+        raise ValueError(
+            f"Unknown portfolio candidates: {unknown}. "
+            f"Supported: {sorted(allowed)}"
+        )
+    if len(set(names)) != len(names):
+        raise ValueError("--portfolio-candidates must not contain duplicates")
+    return names
+
+
+def clone_metrics(metrics, *, name: str):
+    """Copy aggregate metrics under a new display name."""
+    from ppg.eval.harness import BaselineMetrics
+    return BaselineMetrics(
+        name=name,
+        task_scores=list(metrics.task_scores),
+        token_counts=list(metrics.token_counts),
+        constraint_scores=list(metrics.constraint_scores),
+        lm_calls=metrics.lm_calls,
+    )
+
+
+def prompt_for_method(graph, name: str, ppg_path: list[str] | None = None) -> str:
+    """Human-readable prompt artifact for a deployable method."""
+    if name == "ppg":
+        return (
+            build_path_prompt(graph, ppg_path)
+            if ppg_path is not None
+            else "[dynamic: learned LinUCB routing per input]"
+        )
+    if name == "base_model":
+        return "[raw input — no prompt engineering]"
+    if name == "flat_all":
+        return build_seed_prompt(graph)
+    if name in {"static_best", "highest_utility"}:
+        return build_best_path_prompt(graph)
+    return f"[validation-selected method: {name}]"
+
+
 # ---------------------------------------------------------------------------
 # DSPy call counter — reads dspy.LM.history (available in DSPy >= 2.4)
 # ---------------------------------------------------------------------------
@@ -326,29 +372,38 @@ def make_lm(
     timeout: float = 30.0,
     max_retries: int = 3,
     parse_retries: int = 2,
+    max_tokens: int = 2048,
+    enable_prompt_cache: bool = False,
+    batch_api: bool = False,
 ):
     if provider == "openai":
-        from ppg.lm.clients import OpenAIClient, OpenAIConfig
-        lm = OpenAIClient(OpenAIConfig(
+        from ppg.lm.clients import OpenAIClient, OpenAIBatchClient, OpenAIConfig
+        cfg = OpenAIConfig(
             model=model,
             temperature=temperature,
             sample_temperature=sample_temperature,
-            max_tokens=2048,
+            max_tokens=max_tokens,
             timeout=timeout,
             max_retries=max_retries,
             parse_retries=parse_retries,
-        ))
+            enable_prompt_cache=enable_prompt_cache,
+        )
+        lm = OpenAIBatchClient(cfg) if batch_api else OpenAIClient(cfg)
     elif provider == "anthropic":
         from ppg.lm.clients import AnthropicClient, AnthropicConfig
         lm = AnthropicClient(AnthropicConfig(
             model=model,
             temperature=temperature,
             sample_temperature=sample_temperature,
-            max_tokens=2048,
+            max_tokens=max_tokens,
             timeout=timeout,
             max_retries=max_retries,
             parse_retries=parse_retries,
+            enable_prompt_cache=enable_prompt_cache,
         ))
+        if batch_api:
+            from ppg.lm.clients import BatchLMClient
+            lm = BatchLMClient(lm)
     else:
         raise ValueError(f"Unknown provider: {provider!r}")
 
@@ -357,6 +412,11 @@ def make_lm(
         os.makedirs(cache_dir, exist_ok=True)
         cache_path = os.path.join(cache_dir, f"{provider}_{model.replace('/', '_')}.json")
         lm = DiskCachedLMClient(lm, cache_path)
+    else:
+        # No disk cache: still deduplicate identical deterministic prompts in
+        # memory (GRPO / LOO / perturbation repeats) so they cost one real call.
+        from ppg.lm.clients import MemoizingLMClient
+        lm = MemoizingLMClient(lm)
 
     return lm
 
@@ -458,6 +518,20 @@ def main():
                         help="Early-stop patience for validation path search; "
                              "0 disables early stopping. Default: 0 when explicit "
                              "path candidates or path ensembles are requested, else 10.")
+    parser.add_argument("--ppg-portfolio", action="store_true",
+                        dest="ppg_portfolio",
+                        help="Use the validation split to choose a final deployable method "
+                             "among PPG and cheap one-call baselines, then report it as "
+                             "ppg_portfolio on the test split.")
+    parser.add_argument("--portfolio-candidates",
+                        default="ppg,base_model,flat_all,static_best,highest_utility",
+                        dest="portfolio_candidates",
+                        help="Comma-separated candidates for --ppg-portfolio. Supported: "
+                             "ppg, base_model, flat_all, static_best, highest_utility.")
+    parser.add_argument("--portfolio-min-margin", type=float, default=0.0,
+                        dest="portfolio_min_margin",
+                        help="Keep PPG when the best validation challenger is within this "
+                             "accuracy margin of PPG (default: 0.0).")
     parser.add_argument("--run-base",  action="store_true", dest="run_base",
                         help="Run base model eval only (raw input, no prompt engineering). Skips PPG unless --include-ppg.")
     parser.add_argument("--run-internal-baselines", action="store_true",
@@ -512,7 +586,30 @@ def main():
                         help="Include few-shot example fragments in the graph")
     parser.add_argument("--ppg-reflection-model", default=None, dest="ppg_reflection_model",
                         help="LM for PPG reflection/evolution (default: same as --model)")
+    # --- Cost-reduction controls ---
+    parser.add_argument("--batch-api", action="store_true", dest="batch_api",
+                        help="Route offline LM calls through the provider Batch API (-50%%). "
+                             "Offline only — adds minutes of latency.")
+    parser.add_argument("--enable-prompt-cache", action="store_true", dest="enable_prompt_cache",
+                        help="Send a cached static system prefix (Anthropic) / mark intent "
+                             "(OpenAI auto-caches) to cut repeated input-token cost.")
+    parser.add_argument("--aux-model", default=None, dest="aux_model",
+                        help="Cheaper model for auxiliary LOO-credit and perturbation-variance "
+                             "calls (relative signal only; main path stays on --model).")
+    parser.add_argument("--aux-max-tokens", type=int, default=256, dest="aux_max_tokens",
+                        help="max_tokens for the aux model's auxiliary calls (default: 256).")
+    parser.add_argument("--racing-subset", type=int, default=0, dest="racing_subset",
+                        help="Calibration racing: pre-score paths on this many val examples "
+                             "before full-scoring survivors. 0 = off.")
+    parser.add_argument("--racing-survivors", type=int, default=0, dest="racing_survivors",
+                        help="Number of paths to keep after the racing pre-filter. 0 = off.")
     args = parser.parse_args()
+    portfolio_candidate_names: list[str] = []
+    if args.ppg_portfolio:
+        try:
+            portfolio_candidate_names = parse_portfolio_candidates(args.portfolio_candidates)
+        except ValueError as exc:
+            parser.error(str(exc))
     requested_ppg_ensemble_paths = args.ppg_ensemble_paths
     from ppg.eval.path_search import effective_majority_ensemble_size
     args.ppg_ensemble_paths = effective_majority_ensemble_size(args.ppg_ensemble_paths)
@@ -584,7 +681,30 @@ def main():
         timeout=args.timeout,
         max_retries=args.max_retries,
         parse_retries=args.parse_retries,
+        enable_prompt_cache=args.enable_prompt_cache,
+        batch_api=args.batch_api,
     ))
+
+    # Optional cheaper auxiliary model for LOO-credit and perturbation-variance.
+    # These need only a relative signal, so a smaller/cheaper model + tighter
+    # token budget preserves ranking at a fraction of the cost. Falls back to the
+    # main lm when --aux-model is not set.
+    aux_lm = lm
+    if args.aux_model:
+        aux_lm = CountingLMClient(make_lm(
+            args.provider,
+            args.aux_model,
+            cache_dir,
+            temperature=args.temperature,
+            sample_temperature=args.sample_temperature,
+            timeout=args.timeout,
+            max_retries=args.max_retries,
+            parse_retries=args.parse_retries,
+            max_tokens=args.aux_max_tokens,
+            enable_prompt_cache=args.enable_prompt_cache,
+            batch_api=args.batch_api,
+        ))
+        _info(f"aux model (credit/variance): {args.aux_model} (max_tokens={args.aux_max_tokens})")
 
     # ------------------------------------------------------------------
     # 3. Build graph (needed by all methods for seed prompt)
@@ -622,6 +742,8 @@ def main():
     _splits = {"train": train_ex, "val": val_ex, "test": test_ex}
     train_time = 0.0
     stats = None
+    portfolio_selection_info = None
+    portfolio_selected_name = None
 
     # ==================================================================
     # PPG path: train → calibrate → eval
@@ -668,6 +790,7 @@ def main():
                 constraint_checker=constraint_checker,
                 config=prod_cfg,
                 logger=ppg_logger,
+                aux_lm=aux_lm,
             )
             _info("reward: ParetoRewardComputer")
         else:
@@ -678,6 +801,7 @@ def main():
                 assembler=assembler,
                 constraint_checker=constraint_checker,
                 config=rcfg,
+                aux_lm=aux_lm,
             )
 
         credit_cfg = CreditAssignerConfig()
@@ -704,6 +828,7 @@ def main():
             constraint_checker=constraint_checker,
             constraint_as_task=constraint_as_task,
             credit_metric=credit_metric,
+            aux_lm=aux_lm,
         )
 
         # --- Reflection / Evolution / Branching (production mode) ---
@@ -862,6 +987,8 @@ def main():
                 return_top_k=max(1, args.ppg_ensemble_paths),
                 path_runner=path_runner,
                 normalizer=feat_extractor.normalizer,
+                racing_subset=args.racing_subset,
+                racing_survivors=args.racing_survivors,
             )
             ppg_calibration_calls = lm.reset()
             ppg_calibration_real_calls = (
@@ -929,6 +1056,57 @@ def main():
             logger=ppg_logger,
         )
 
+        if args.ppg_portfolio and val_ex:
+            _info(
+                "Selecting final deployment by validation portfolio: "
+                + ", ".join(portfolio_candidate_names)
+            )
+            from ppg.eval.portfolio import (
+                candidate_from_metrics,
+                select_deployment_by_validation,
+            )
+
+            portfolio_harness = EvalHarness(
+                executor=executor,
+                metric=metric,
+                lm=lm,
+                config=EvalConfig(
+                    baselines=[],
+                    ppg_path=ppg_path,
+                    ppg_paths=ppg_paths,
+                    static_best_path=best_utility_path(graph),
+                    show_progress=False,
+                    show_method_tables=False,
+                    n_workers=args.workers,
+                ),
+                constraint_checker=constraint_checker,
+                logger=NullLogger(),
+            )
+            deployment_candidates = []
+            for candidate_name in portfolio_candidate_names:
+                metrics = portfolio_harness.evaluate_one(candidate_name, val_ex, lm_counter=lm)
+                deployment_candidates.append(candidate_from_metrics(
+                    metrics,
+                    name=candidate_name,
+                    priority=1 if candidate_name == "ppg" else 0,
+                    metadata={"split": "val"},
+                ))
+
+            selection = select_deployment_by_validation(
+                deployment_candidates,
+                incumbent_name="ppg",
+                min_margin=args.portfolio_min_margin,
+            )
+            portfolio_selection_info = selection.as_dict()
+            portfolio_selected_name = selection.selected.name
+            _info(
+                f"portfolio selected {portfolio_selected_name} "
+                f"(val={selection.selected.val_score:.4f}, "
+                f"reason={selection.reason})"
+            )
+        elif args.ppg_portfolio:
+            _info("Skipping validation portfolio: validation split is empty")
+
         _step_rule(4, 4, "Evaluating PPG...")
         real_opt_calls = train_real_calls + ppg_calibration_real_calls
         all_metrics["ppg"] = harness.evaluate_splits(
@@ -952,6 +1130,28 @@ def main():
             optimized_prompts["static_best"]     = build_best_path_prompt(graph)
             optimized_prompts["random_gating"]   = "[dynamic: random node selection per input]"
             optimized_prompts["highest_utility"] = build_best_path_prompt(graph)
+
+        if portfolio_selected_name:
+            portfolio_metric_name = "ppg_portfolio"
+            if portfolio_selected_name in all_metrics:
+                all_metrics[portfolio_metric_name] = clone_metrics(
+                    all_metrics[portfolio_selected_name],
+                    name=portfolio_metric_name,
+                )
+            else:
+                all_metrics[portfolio_metric_name] = clone_metrics(
+                    harness.evaluate_splits(
+                        portfolio_selected_name,
+                        {"test": test_ex},
+                        lm_counter=lm,
+                        opt_calls=0,
+                    )["test"],
+                    name=portfolio_metric_name,
+                )
+            optimized_prompts[portfolio_metric_name] = (
+                f"[validation portfolio selected: {portfolio_selected_name}]\n\n"
+                + prompt_for_method(graph, portfolio_selected_name, ppg_path)
+            )
 
     # ==================================================================
     # MIPROv2 path: compile → eval (independent)
@@ -1090,6 +1290,7 @@ def main():
         and not args.run_mipro
         and not args.run_gepa
         and not args.run_base
+        and not args.ppg_portfolio
     )
 
     if not ppg_only_output:
@@ -1202,6 +1403,7 @@ def main():
         "train_time_s":   round(train_time, 1) if run_ppg else None,
         "training_stats": stats.summary() if stats else None,
         "ppg_calibration": ppg_calibration_info if run_ppg else None,
+        "ppg_portfolio":   portfolio_selection_info,
         "results":        rows,
         "winner":         winner,
         "optimized_prompts": optimized_prompts,

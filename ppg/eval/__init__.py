@@ -12,6 +12,12 @@ from .path_search import (
     score_path,
     select_path_by_validation,
 )
+from .portfolio import (
+    DeploymentCandidate,
+    DeploymentSelection,
+    candidate_from_metrics,
+    select_deployment_by_validation,
+)
 
 __all__ = [
     "EvalExample",
@@ -24,4 +30,8 @@ __all__ = [
     "ranked_paths",
     "score_path",
     "select_path_by_validation",
+    "DeploymentCandidate",
+    "DeploymentSelection",
+    "candidate_from_metrics",
+    "select_deployment_by_validation",
 ]

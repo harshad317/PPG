@@ -106,8 +106,14 @@ class CreditAssigner:
         constraint_checker: Optional[ConstraintChecker]   = None,
         constraint_as_task: bool                          = False,
         credit_metric:      Optional[TaskMetric]          = None,
+        aux_lm:             Optional[LMClient]            = None,
     ):
+        # LOO only needs a *relative* marginal (did removing this node hurt?),
+        # not the SOTA model's absolute answer quality. When aux_lm is given,
+        # the cheaper model scores ablations while the main model still produces
+        # the real episode response. Falls back to lm when aux_lm is None.
         self.lm                 = lm
+        self.aux_lm             = aux_lm or lm
         self.asm                = assembler
         self.metric             = task_metric
         self._credit_metric     = credit_metric or task_metric
@@ -279,7 +285,7 @@ class CreditAssigner:
         # Ablated path: remove node_id, re-assemble, call LM
         ablated_ids      = [n for n in trace.node_ids if n != node_id]
         ablated_prompt   = self.asm.assemble(ablated_ids, {"input": x})
-        ablated_response = self.lm.complete(ablated_prompt)
+        ablated_response = self.aux_lm.complete(ablated_prompt)
 
         if self.constraint_as_task and self.checker is not None:
             ablated_score = self.checker.check(ablated_response, constraints or [], metadata)

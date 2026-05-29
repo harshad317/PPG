@@ -491,6 +491,21 @@ Validation path calibration is implemented in `ppg/eval/path_search.py`.
 learned utility, scores candidate paths on validation examples, and returns a
 fixed deployment path.
 
+For stronger deployment, the benchmark runner can also validate a small method
+portfolio and report the selected winner as `ppg_portfolio`:
+
+```bash
+python scripts/run_benchmark.py gsm8k \
+  --model gpt-4o-mini \
+  --production \
+  --ppg-portfolio \
+  --portfolio-min-margin 0.01
+```
+
+This uses validation-only evidence to choose among PPG, `base_model`,
+`flat_all`, `static_best`, and `highest_utility`. The margin keeps PPG when a
+challenger's validation gain is too small to trust.
+
 ## Ablations
 
 The ablation framework trains a fresh system for each ablation and evaluates it

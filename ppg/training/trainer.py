@@ -123,6 +123,20 @@ class TrainerConfig:
     # independent path samples; the bandit updates with advantage = r - mean(r).
     k_grpo_paths: int = 1
 
+    # GRPO in the fine-tune phase. Fine-tune runs near-greedy (alpha_finetune
+    # small), so extra path samples there buy almost no advantage signal while
+    # costing k_grpo_paths LM calls/episode. Default 1 = no GRPO in fine-tune.
+    k_grpo_paths_finetune: int = 1
+
+    # Adaptive GRPO: when True, the full k_grpo_paths budget is only spent on
+    # episodes whose routed path is still uncertain under the bandit. Episodes
+    # below grpo_uncertainty_threshold collapse to k_grpo_min samples. This
+    # concentrates sampling where the group-relative signal is informative and
+    # cuts calls sharply once arms converge. No effect when k_grpo_paths <= 1.
+    grpo_adaptive: bool             = False
+    grpo_uncertainty_threshold: float = 0.05
+    k_grpo_min:    int              = 2
+
     # Parallelism — concurrent episode collection via ThreadPoolExecutor.
     # LM API calls are I/O-bound so threads scale well up to API rate limits.
     # Policy updates and credit assignment remain sequential.
@@ -152,6 +166,17 @@ class TrainerConfig:
             skip_escalation_train=True,
             n_workers=4,
             k_grpo_paths=4,
+            # Cost controls: spend the k=4 GRPO budget only on still-uncertain
+            # train episodes, never in the near-greedy fine-tune phase, and stop
+            # a phase once reward plateaus. Each preserves quality (exploitation
+            # phase / converged arms / plateau) while removing the dominant
+            # source of LM calls.
+            k_grpo_paths_finetune=1,
+            grpo_adaptive=True,
+            grpo_uncertainty_threshold=0.05,
+            k_grpo_min=2,
+            early_stop_window=200,
+            early_stop_eps=0.003,
         )
         defaults.update(overrides)
         return cls(**defaults)
@@ -510,8 +535,10 @@ class PPGTrainer:
 
         # GRPO: sample additional paths for group-relative advantage updates.
         # Runs before standard update so the bandit sees comparative signal.
-        if self.cfg.k_grpo_paths > 1 and train_mode and self._train_policy:
-            self._grpo_update(example, trace, reward_components, train_mode)
+        if train_mode and self._train_policy:
+            grpo_k = self._grpo_k(phase, trace, phi)
+            if grpo_k > 1:
+                self._grpo_update(example, trace, reward_components, train_mode, k=grpo_k)
 
         # Run credit first so its marginal can sharpen per-edge reward signals.
         credit_result = self.credit.maybe_assign(
@@ -628,19 +655,43 @@ class PPGTrainer:
         trace, reward_components = self._collect(example, train_mode)
         return self._apply_update(trace, reward_components, example, phase)
 
+    def _grpo_k(self, phase: str, trace, phi: np.ndarray) -> int:
+        """
+        GRPO sample count for this episode.
+
+        Fine-tune uses k_grpo_paths_finetune (default 1 = off) since it runs
+        near-greedy. In train, when grpo_adaptive is set, the full budget is
+        spent only on episodes whose routed path is still uncertain under the
+        bandit; converged paths collapse to k_grpo_min. Otherwise the static
+        k_grpo_paths is used.
+        """
+        if phase == "finetune":
+            return max(1, self.cfg.k_grpo_paths_finetune)
+
+        k_full = self.cfg.k_grpo_paths
+        if k_full <= 1 or not self.cfg.grpo_adaptive:
+            return k_full
+
+        uncertainty = self.policy.path_uncertainty(trace.edges_traversed, phi)
+        if uncertainty >= self.cfg.grpo_uncertainty_threshold:
+            return k_full
+        return max(1, min(self.cfg.k_grpo_min, k_full))
+
     def _grpo_update(
         self,
         example:    TrainingExample,
         trace,
         reward_components,
         train_mode: bool,
+        k:          Optional[int] = None,
     ) -> None:
         """GRPO: sample k-1 additional paths, compute group advantage, update bandit."""
         phi = trace.pre_lm_features.as_vector()
+        k = self.cfg.k_grpo_paths if k is None else k
         group_paths = [trace.edges_traversed]
         group_rewards = [reward_components.total]
 
-        for _ in range(self.cfg.k_grpo_paths - 1):
+        for _ in range(k - 1):
             alt_trace, alt_reward = self._collect(example, train_mode)
             group_paths.append(alt_trace.edges_traversed)
             group_rewards.append(alt_reward.total)
