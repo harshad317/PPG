@@ -12,10 +12,11 @@ The repository includes:
 | Layer | What is implemented | Main modules |
 | --- | --- | --- |
 | Typed prompt graphs | Fragment types, graph validation, JSON serialization, lean/rich graph builders | `ppg/core/graph.py`, `ppg/data/fragments.py` |
-| Runtime execution | Feature extraction, guard evaluation, LinUCB routing, prompt assembly, optional self-consistency escalation | `ppg/core/features.py`, `ppg/core/executor.py` |
-| Training | Warm-up/train/fine-tune loop, LOO fragment credit, reward shaping, GRPO-style updates, Pareto reward, reflection, evolution, branching | `ppg/training/` |
-| Evaluation | Matched-budget harness, validation path search, internal baselines, external MIPROv2/GEPA wrappers | `ppg/eval/` |
+| Runtime execution | Feature extraction, guard evaluation, LinUCB routing, prompt assembly, optional self-consistency escalation with adaptive early-exit | `ppg/core/features.py`, `ppg/core/executor.py` |
+| Training | Warm-up/train/fine-tune loop, LOO fragment credit, reward shaping, GRPO-style updates (adaptive-k), Pareto reward, reflection, evolution, branching | `ppg/training/` |
+| Evaluation | Matched-budget harness, validation path search with successive-halving racing, internal baselines, external MIPROv2/GEPA wrappers | `ppg/eval/` |
 | Benchmarks | Hugging Face loaders for math, QA, instruction following, code, MCQ, and multitask exams | `ppg/eval/benchmarks/loaders.py` |
+| API cost controls | Provider Batch API (-50%), prompt caching, cheaper auxiliary model, adaptive sampling, in-process dedup | `ppg/lm/clients.py`, `COST_REDUCTION.md` |
 
 Research note: this repository implements the proposed method and experiment
 scaffolding. It is not a SOTA claim until large-scale benchmark results,
@@ -30,6 +31,7 @@ reported.
 - [Installation](#installation)
 - [Quickstart](#quickstart)
 - [Benchmark Runner](#benchmark-runner)
+- [API Cost Controls](#api-cost-controls)
 - [Training](#training)
 - [Evaluation](#evaluation)
 - [Ablations](#ablations)
@@ -118,6 +120,13 @@ flowchart LR
 production executor can enable self-consistency escalation with `k_samples=3`;
 when post-LM disagreement exceeds the threshold, the executor appends an
 `UNCERTAINTY_ESCALATION` fragment and calls the LM again.
+
+Production also enables **adaptive (early-exit) self-consistency**: samples are
+drawn incrementally and sampling stops as soon as the majority answer is settled
+(the lead cannot be overturned by the remaining budget, or the top answer holds
+`adaptive_confidence` of the votes). Easy inputs cost one or two calls while
+ambiguous ones still use the full `k_samples` budget. See
+[API Cost Controls](#api-cost-controls).
 
 ### Graph Topologies
 
@@ -239,6 +248,27 @@ base_lm = OpenAIClient(OpenAIConfig(model="gpt-4o-mini", temperature=0.0))
 lm = DiskCachedLMClient(base_lm, cache_path=".cache/lm_cache.json")
 ```
 
+Cost-aware client variants (see [API Cost Controls](#api-cost-controls)):
+
+```python
+from ppg.lm import (
+    AnthropicClient, AnthropicConfig,
+    OpenAIBatchClient, BatchLMClient, MemoizingLMClient,
+)
+
+# Provider Batch API at -50% for offline (non-interactive) work.
+batch_lm = OpenAIBatchClient(OpenAIConfig(model="gpt-4o-mini"))
+responses = batch_lm.complete_batch(["prompt a", "prompt b", "prompt c"])
+
+# Prompt caching: cache the static system prefix across repeated calls.
+cached_lm = AnthropicClient(AnthropicConfig(
+    model="claude-haiku-4-5-20251001", enable_prompt_cache=True,
+))
+
+# Add a batch entry point + in-process dedup to any client.
+lm = MemoizingLMClient(BatchLMClient(base_lm))
+```
+
 ## Benchmark Runner
 
 `scripts/run_benchmark.py` loads splits, trains PPG when requested, optionally
@@ -288,11 +318,16 @@ Useful flags:
 | `--ppg-path-candidates N` | Limits validation path search to the top `N` utility-ranked paths |
 | `--ppg-ensemble-paths N` | Lets validation deploy up to `N` majority-vote paths; tied ensembles shrink to the lowest-token size |
 | `--ppg-calibration-patience N` | Controls early stopping during validation path search; `0` evaluates all requested candidates |
-| `--production` | Enables production configs: self-consistency escalation, semantic clusters, Pareto reward, GRPO, reflection, evolution, branching |
+| `--production` | Enables production configs: adaptive self-consistency escalation, semantic clusters, Pareto reward, adaptive-k GRPO (off in fine-tune), plateau early-stop, reflection, evolution, branching |
 | `--sample-temperature T`, `--k-samples N` | Control stochastic self-consistency samples used by production escalation/majority voting |
 | `--timeout S`, `--max-retries N`, `--parse-retries N` | Tune provider request timeouts, SDK retries, and extra retries for empty/non-JSON provider responses |
 | `--no-reflection`, `--no-evolution`, `--no-branching`, `--no-pareto` | Disable individual production features |
 | `--workers N` | Runs episode collection and evaluation LM calls with thread workers |
+| `--batch-api` | Routes offline LM calls through the provider Batch API (-50%); offline only, adds latency |
+| `--enable-prompt-cache` | Caches the static system prefix (Anthropic) / marks intent (OpenAI auto-caches) to cut repeated input-token cost |
+| `--aux-model MODEL` | Routes LOO-credit and perturbation-variance calls to a cheaper model (relative signal only); main path stays on `--model` |
+| `--aux-max-tokens N` | `max_tokens` for the auxiliary model's calls (default 256) |
+| `--racing-subset K`, `--racing-survivors M` | Successive-halving calibration: pre-score paths on `K` val examples, keep top `M` before full scoring |
 | `--run-mipro`, `--run-gepa` | Runs external prompt optimizer baselines |
 | `--run-internal-baselines` | Also runs diagnostic internal baselines after PPG |
 | `--diagnostic-report` | Prints the full PPG diagnostic report after the score table |
@@ -337,6 +372,42 @@ python scripts/run_suite.py \
   --output-dir results_suite \
   --summarize-only
 ```
+
+## API Cost Controls
+
+LM API calls dominate the cost of training, calibration, and evaluation. The
+features below cut that cost while preserving task quality; each is off by
+default (or bundled only into `--production`) and gated behind a flag or config
+field. The full analysis and call-budget breakdown live in `COST_REDUCTION.md`.
+
+| Control | Where | Enable | Quality note |
+| --- | --- | --- | --- |
+| Batch API (-50%) | `OpenAIBatchClient`, `BatchLMClient` | `--batch-api` | Output-identical; offline only |
+| Prompt caching | `AnthropicConfig.enable_prompt_cache` | `--enable-prompt-cache` | Caches only the static system prefix |
+| Cheaper auxiliary model | `aux_lm` on `RewardComputer` / `CreditAssigner` | `--aux-model`, `--aux-max-tokens` | LOO/variance need a relative signal only |
+| Adaptive self-consistency | `ExecutorConfig.adaptive_sampling` | on in `--production` | Stops only once the majority is settled |
+| Adaptive-k GRPO | `TrainerConfig.grpo_adaptive`, `k_grpo_min` | on in `--production` | Full budget only on uncertain paths |
+| No GRPO in fine-tune | `TrainerConfig.k_grpo_paths_finetune` | on in `--production` (=1) | Fine-tune is near-greedy already |
+| Plateau early-stop | `TrainerConfig.early_stop_window` | on in `--production` (=200) | Stops a phase only at a reward plateau |
+| Calibration racing | `select_path_by_validation(racing_subset, racing_survivors)` | `--racing-subset`, `--racing-survivors` | Winner still validated on full val split |
+| In-process dedup | `MemoizingLMClient` | auto when `--no-cache` | Deterministic prompts only (`temperature=0`) |
+
+GRPO sampling is the single largest source of LM calls in production training,
+so the adaptive-k and fine-tune controls have the biggest impact. Batch API and
+prompt caching compound on top of every remaining call. A full cost-aware
+production run:
+
+```bash
+python scripts/run_benchmark.py gsm8k --model gpt-4.1-mini --production \
+  --batch-api --enable-prompt-cache \
+  --aux-model gpt-4o-mini --aux-max-tokens 256 \
+  --racing-subset 25 --racing-survivors 8
+```
+
+The batch entry point `complete_batch` is forwarded and deduplicated by
+`DiskCachedLMClient`, `MemoizingLMClient`, `CountingLMClient`, and the
+perturbation-variance path, so wrapping a native Batch backend propagates
+everywhere automatically.
 
 ## Training
 
@@ -432,9 +503,11 @@ Production mode in the runner wires together these optional components:
 
 | Component | Implementation | Purpose |
 | --- | --- | --- |
-| Self-consistency majority/escalation | `ExecutorConfig.production()` | Samples multiple responses, majority-votes normalized answers, and escalates when disagreement is high |
+| Adaptive self-consistency | `ExecutorConfig.production()` | Samples multiple responses, majority-votes normalized answers, escalates on high disagreement, and stops sampling early once the majority is settled |
 | Semantic clusters | `FeatureExtractor.production()` | Uses sentence-transformer embeddings when available |
-| GRPO-style updates | `TrainerConfig.k_grpo_paths > 1` | Updates paths with group-relative advantages |
+| Adaptive-k GRPO updates | `TrainerConfig.k_grpo_paths > 1`, `grpo_adaptive`, `k_grpo_paths_finetune` | Updates paths with group-relative advantages; full sample budget only on uncertain paths, disabled in the near-greedy fine-tune phase |
+| Mixed-model auxiliary calls | `aux_lm` on `RewardComputer` / `CreditAssigner` | Routes LOO-credit and perturbation-variance rollouts to a cheaper model |
+| Plateau early-stop | `TrainerConfig.early_stop_window` | Halts a phase once mean reward stops improving |
 | Pareto reward | `ParetoRewardComputer` | Avoids fixed scalar weights by ranking objective vectors |
 | Reflection | `ReflectionLoop` | Diagnoses failed episodes and annotates fragments |
 | Evolution | `FragmentEvolver` | Mutates low-utility fragment templates |
@@ -653,7 +726,7 @@ ppg/
   ablations/
     study.py          # Paper-style ablation runner
   lm/
-    clients.py        # OpenAI, Anthropic, counting, and disk-cached clients
+    clients.py        # OpenAI, Anthropic, counting, disk-cached, memoizing, and batch (-50%) clients
   logging_utils.py    # JSONL/CSV/W&B logging and diagnostic reports
 scripts/
   run_benchmark.py    # End-to-end benchmark runner
@@ -665,7 +738,11 @@ tests/
   test_ablations/
   test_data/
   test_lm/
+  test_cost_reduction.py   # batch/dedup, prompt cache, adaptive-k GRPO, aux routing, adaptive SC, racing
 ```
+
+The cost-reduction analysis and call-budget breakdown are documented in
+`COST_REDUCTION.md`.
 
 ## Development
 
@@ -690,7 +767,7 @@ ruff check .
 Last verified local run:
 
 ```text
-703 passed in 7.67s
+761 passed in 2.14s
 ```
 
 ## Citation
